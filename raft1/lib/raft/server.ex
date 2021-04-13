@@ -44,7 +44,7 @@ defmodule Raft.Server do
     {:ok, state, data}
   end
 
-  def follower(:info, :timeout, %Data{timer: timer} = data) do
+  def follower(:info, :election_timeout, %Data{timer: timer} = data) do
     Logger.debug "Election timer ended"
     {:keep_state, %{data | timer: timer}}
   end
