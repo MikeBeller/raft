@@ -22,6 +22,7 @@ defmodule Raft.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
       {:gen_state_machine, "~> 3.0"},
     ]
   end

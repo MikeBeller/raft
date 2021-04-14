@@ -1,6 +1,7 @@
 defmodule Raft.ConsensusTest do
   use ExUnit.Case, async: true
   alias Raft.Consensus
+  alias Raft.RPC
 
   test "random range" do
     all = for _ <- 1..1000, into: MapSet.new(), do: Consensus.random_range(2,13)
@@ -19,4 +20,17 @@ defmodule Raft.ConsensusTest do
     assert [{:set_timer, :election, n}] = actions
     assert n >= 150 and n <= 300
   end
+
+  test "follower election timeout" do
+    {:init, data, []} = Consensus.init(:a)
+    {:follower, data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
+    assert {:candidate, data, actions}
+    = Consensus.ev(:follower, {:timeout, :election}, data)
+
+    %{nodes: nodes, me: me} = data
+    assert [ {:set_timer, :election, _n},
+      {:send, ^nodes, %RPC.RequestVoteReq{term: 1,from: ^me,last_log_index: 0,last_log_term: 0,}}
+    ] = actions
+  end
+
 end
