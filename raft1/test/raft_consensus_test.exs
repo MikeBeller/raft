@@ -24,8 +24,7 @@ defmodule Raft.ConsensusTest do
   test "follower election timeout" do
     {:init, data, []} = Consensus.init(:a)
     {:follower, data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
-    assert {:candidate, data, actions}
-    = Consensus.ev(:follower, {:timeout, :election}, data)
+    assert {:candidate, data, actions} = Consensus.ev(:follower, {:timeout, :election}, data)
 
     %{nodes: nodes, me: me} = data
     assert [ {:set_timer, :election, _n},

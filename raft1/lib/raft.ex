@@ -1,17 +1,7 @@
 defmodule Raft do
-  @moduledoc """
-  Documentation for `Raft`.
-  """
+  @type addr() :: atom()
+  @type time() :: non_neg_integer()
 
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> Raft.hello()
-      :world
-
-  """
   def hello do
     :world
   end
