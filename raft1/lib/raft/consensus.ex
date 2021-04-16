@@ -14,12 +14,12 @@ defmodule Raft.Consensus do
     @type time :: Raft.time
     @type log_entry :: {non_neg_integer(), non_neg_integer(), term()}
 
-    defstruct [:current_term, :voted_for, :votes_received, :log, :me, :nodes, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
+    defstruct [:term, :voted_for, :responses, :log, :me, :nodes, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
 
     @type t :: %__MODULE__{
-      current_term: non_neg_integer(),
+      term: non_neg_integer(),
       voted_for: nil | addr(),
-      votes_received: non_neg_integer(),
+      responses: %{addr() => boolean()},
       log: list(log_entry()),
       me: nil | addr(),
       nodes: list(addr),
@@ -31,7 +31,7 @@ defmodule Raft.Consensus do
     }
 
     def new() do
-      %__MODULE__{current_term: 0, voted_for: nil, votes_received: 0, log: [], me: nil, nodes: [], commit_index: 0, last_applied: 0, next_index: %{}, match_index: %{}, last_event_time: 0}
+      %__MODULE__{term: 0, voted_for: nil, responses: 0, log: [], me: nil, nodes: [], commit_index: 0, last_applied: 0, next_index: %{}, match_index: %{}, last_event_time: 0}
     end
   end
 
@@ -64,8 +64,20 @@ defmodule Raft.Consensus do
     min - 1 + :rand.uniform(max - min + 1)
   end
 
+  @spec quorum(%Data{}, %{addr() => boolean()}) :: boolean()
+  def quorum(%Data{nodes: nodes}, responses) do
+    nn = map_size(nodes) + 1
+    nv = Enum.count(responses, fn {_k, v} -> v end)
+    nv > nn / 2
+  end
+
   @spec election_timeout() :: non_neg_integer()
   def election_timeout(), do: random_range(@election_timeout_min, @election_timeout_max)
+
+  defp reset_election_timer(), do: action_set_timer(:election, election_timeout())
+  defp become_leader() do
+    raise "oops"
+  end
 
   @spec init(addr()) :: {atom(), Data.t, list(action)}
   def init(me) do
@@ -79,15 +91,61 @@ defmodule Raft.Consensus do
   @type event() :: config_event() | timeout_event() | message_event()
   @spec ev(atom(), event(), Data.t) :: {atom(), Data.t, list(action())}
 
+  ## INIT
+  #
+  # This state only exists from creation of a consenus module until it
+  # has the configuration -- the addresses of the other nodes.
+
   def ev(:init, {:config, nodes}, %Data{me: me} = data) do
     data = %{data | nodes: List.delete(nodes, me)}
-    {:follower, data, [action_set_timer(:election, election_timeout())]}
+    {:follower, data, [reset_election_timer()]}
   end
 
-  def ev(:follower, {:timeout, :election}, %Data{current_term: current_term, me: me, nodes: nodes} = data) do
-    term = current_term + 1
-    {:candidate, %{data | current_term: term, voted_for: me}, [
-      action_set_timer(:election, election_timeout()),
-      action_send(nodes, RPC.RequestVoteReq.new(term, me, last_log_index(data), last_log_term(data)))]}
+  ## FOLLOWER
+  #
+
+  # Election timeout
+  def ev(:follower, {:timeout, :election}, %Data{term: term, me: me, nodes: nodes} = data) do
+    term = term + 1
+    {:candidate, %{data | term: term, voted_for: me, responses: %{me => true}},
+      [
+        action_set_timer(:election, election_timeout()),
+        action_send(nodes, %RPC.RequestVoteReq{term: term, from: me,
+            last_log_index: last_log_index(data), last_log_term: last_log_term(data)}),
+      ]
+    }
+  end
+
+  # RequestVote received
+  def ev(:follower, {:recv, %RPC.RequestVoteReq{}} = req, %Data{} = data) do
+    raise "unimplemented"
+  end
+
+  ## CANDIDATE
+  #
+  # RequestVote responses:
+  #
+  # all negative vote responses
+  def ev(:candidate, {:recv, %RPC.RequestVoteResp{} = resp}, %Data{} = data) do
+    cond do 
+      resp.term > data.term ->
+        {:follower, %{data | term: resp.term, responses: %{}, leader: nil}, [reset_election_timer()]}
+      resp.term < data.term ->  #ignore
+        {:candidate, data, []}
+      true ->
+        {:follower, %{data | responses: Map.put(data.responses, resp.from, false)}, []}
+    end
+  end
+
+  # all positive vote responses
+  def ev(:candidate, {:recv, %RPC.RequestVoteResp{} = resp}, %Data{} = data) do
+    responses = Map.put(data.responses, resp.from, true)
+    case quorum(data, responses) do
+      true ->
+        #become_leader(data)
+        raise "unimplemented"
+      false ->
+        {:candidate, %{data | responses: responses}, []}
+    end
   end
 end

@@ -10,7 +10,7 @@ defmodule Raft.ConsensusTest do
 
   test "init waits for nodes" do
     assert {:init, data, []} = Consensus.init(:a)
-    assert %Consensus.Data{me: :a, current_term: 0, commit_index: 0, last_applied: 0, log: []} = data
+    assert %Consensus.Data{me: :a, term: 0, commit_index: 0, last_applied: 0, log: []} = data
   end
 
   test "config leads to follower" do
