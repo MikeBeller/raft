@@ -14,7 +14,7 @@ defmodule Raft.Consensus do
     @type time :: Raft.time
     @type log_entry :: {non_neg_integer(), non_neg_integer(), term()}
 
-    defstruct [:term, :voted_for, :responses, :log, :me, :nodes, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
+    defstruct [:term, :voted_for, :responses, :log, :me, :nodes, :leader, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
 
     @type t :: %__MODULE__{
       term: non_neg_integer(),
@@ -23,6 +23,7 @@ defmodule Raft.Consensus do
       log: list(log_entry()),
       me: nil | addr(),
       nodes: list(addr),
+      leader: nil | addr(),
       commit_index: non_neg_integer(),
       last_applied: non_neg_integer(),
       next_index: %{addr() => non_neg_integer()},
@@ -31,7 +32,7 @@ defmodule Raft.Consensus do
     }
 
     def new() do
-      %__MODULE__{term: 0, voted_for: nil, responses: 0, log: [], me: nil, nodes: [], commit_index: 0, last_applied: 0, next_index: %{}, match_index: %{}, last_event_time: 0}
+      %__MODULE__{term: 0, voted_for: nil, responses: 0, log: [], me: nil, nodes: [], leader: nil, commit_index: 0, last_applied: 0, next_index: %{}, match_index: %{}, last_event_time: 0}
     end
   end
 
@@ -40,7 +41,7 @@ defmodule Raft.Consensus do
   @type send_action() :: {:send, list(addr()), RPC.t}
   @type action() :: set_timer_action() | cancel_timer_action() | send_action()
 
-  @type result() :: {atom(), Data.t, list(action())}
+  @type event_result() :: {atom(), Data.t, list(action())}
 
   @spec action_set_timer(atom(), non_neg_integer()) :: set_timer_action()
   defp action_set_timer(name, timeout), do: {:set_timer, name, timeout}
@@ -64,11 +65,23 @@ defmodule Raft.Consensus do
     min - 1 + :rand.uniform(max - min + 1)
   end
 
-  @spec quorum(%Data{}, %{addr() => boolean()}) :: boolean()
-  def quorum(%Data{nodes: nodes}, responses) do
-    nn = map_size(nodes) + 1
+  @spec quorum?(%Data{}, %{addr() => boolean()}) :: boolean()
+  def quorum?(%Data{nodes: nodes}, responses) do
+    nn = length(nodes) + 1
     nv = Enum.count(responses, fn {_k, v} -> v end)
     nv > nn / 2
+  end
+
+  defp candidate_log_up_to_date?(%RPC.RequestVoteReq{} = req, %Data{} = data) do
+    lli = last_log_index(data)
+    llt = last_log_term(data)
+    cond do
+      req.term > llt -> true
+      req.term < llt -> false
+      req.term == llt and req.last_log_index > lli -> true
+      req.term == llt and req.last_log_index < lli -> false
+      true -> true
+    end
   end
 
   @spec election_timeout() :: non_neg_integer()
@@ -79,7 +92,7 @@ defmodule Raft.Consensus do
     raise "oops"
   end
 
-  @spec init(addr()) :: {atom(), Data.t, list(action)}
+  @spec init(addr()) :: event_result()
   def init(me) do
     data = %{Data.new() | me: me}
     {:init, data, []}
@@ -90,6 +103,20 @@ defmodule Raft.Consensus do
   @type message_event() :: {:recv, RPC.t}
   @type event() :: config_event() | timeout_event() | message_event()
   @spec ev(atom(), event(), Data.t) :: {atom(), Data.t, list(action())}
+
+  ## State transition functions
+  
+  @spec become_candidate(Data.t) :: event_result()
+  def become_candidate(%Data{} = data) do
+    term = data.term + 1
+    {:candidate, %{data | term: term, voted_for: data.me, responses: %{data.me => true}},
+      [
+        action_set_timer(:election, election_timeout()),
+        action_send(data.nodes, %RPC.RequestVoteReq{term: term, from: data.me,
+            last_log_index: last_log_index(data), last_log_term: last_log_term(data)}),
+      ]
+    }
+  end
 
   ## INIT
   #
@@ -105,28 +132,33 @@ defmodule Raft.Consensus do
   #
 
   # Election timeout
-  def ev(:follower, {:timeout, :election}, %Data{term: term, me: me, nodes: nodes} = data) do
-    term = term + 1
-    {:candidate, %{data | term: term, voted_for: me, responses: %{me => true}},
-      [
-        action_set_timer(:election, election_timeout()),
-        action_send(nodes, %RPC.RequestVoteReq{term: term, from: me,
-            last_log_index: last_log_index(data), last_log_term: last_log_term(data)}),
-      ]
-    }
+  def ev(:follower, {:timeout, :election}, %Data{} = data) do
+    become_candidate(data)
   end
 
   # RequestVote received
-  def ev(:follower, {:recv, %RPC.RequestVoteReq{}} = req, %Data{} = data) do
-    raise "unimplemented"
+  def ev(:follower, {:recv, %RPC.RequestVoteReq{} = req}, %Data{} = data) do
+    if req.term >= data.term
+      and (data.voted_for == nil or req.from == data.voted_for)
+      and candidate_log_up_to_date?(req, data) do
+      data = %{data | term: req.term, voted_for: req.from}
+      {:follower, data,
+        [
+          action_send([req.from], %RPC.RequestVoteResp{from: data.me, term: req.term, granted: true}),
+          reset_election_timer(),
+        ]}
+    else
+      {:follower, data,
+        [action_send([req.from], %RPC.RequestVoteResp{from: data.me, term: data.term, granted: false})]}
+    end
   end
 
   ## CANDIDATE
   #
-  # RequestVote responses:
+  # RequestVote responses received:
   #
-  # all negative vote responses
-  def ev(:candidate, {:recv, %RPC.RequestVoteResp{} = resp}, %Data{} = data) do
+  # all negative vote responses received
+  def ev(:candidate, {:recv, %RPC.RequestVoteResp{granted: false} = resp}, %Data{} = data) do
     cond do 
       resp.term > data.term ->
         {:follower, %{data | term: resp.term, responses: %{}, leader: nil}, [reset_election_timer()]}
@@ -137,10 +169,10 @@ defmodule Raft.Consensus do
     end
   end
 
-  # all positive vote responses
-  def ev(:candidate, {:recv, %RPC.RequestVoteResp{} = resp}, %Data{} = data) do
+  # all positive vote responses received
+  def ev(:candidate, {:recv, %RPC.RequestVoteResp{granted: true} = resp}, %Data{} = data) do
     responses = Map.put(data.responses, resp.from, true)
-    case quorum(data, responses) do
+    case quorum?(data, responses) do
       true ->
         #become_leader(data)
         raise "unimplemented"
