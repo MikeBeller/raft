@@ -1,6 +1,7 @@
 defmodule Raft.Consensus do
   #states: [:init, :follower, :leader, :candidate]
   alias Raft.RPC
+  alias Raft.Log
 
   @election_timeout_min 150
   @election_timeout_max 300
@@ -8,12 +9,10 @@ defmodule Raft.Consensus do
 
   @type addr :: Raft.addr
   @type time :: Raft.time
-  @type log_entry :: Raft.log_entry
 
   defmodule Data do
     @type addr :: Raft.addr
     @type time :: Raft.time
-    @type log_entry :: Raft.log_entry
 
     defstruct [:term, :voted_for, :responses, :log, :me, :nodes, :leader, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
 
@@ -21,7 +20,7 @@ defmodule Raft.Consensus do
       term: non_neg_integer(),
       voted_for: nil | addr(),
       responses: %{addr() => boolean()},
-      log: list(log_entry()),
+      log: Log.t(),
       me: nil | addr(),
       nodes: list(addr),
       leader: nil | addr(),
@@ -33,7 +32,20 @@ defmodule Raft.Consensus do
     }
 
     def new() do
-      %__MODULE__{term: 0, voted_for: nil, responses: 0, log: [], me: nil, nodes: [], leader: nil, commit_index: 0, last_applied: 0, next_index: %{}, match_index: %{}, last_event_time: 0}
+      %__MODULE__{
+        term: 0,
+        voted_for: nil,
+        responses: %{},
+        log: Log.new(),
+        me: nil,
+        nodes: [],
+        leader: nil,
+        commit_index: 0,
+        last_applied: 0,
+        next_index: %{},
+        match_index: %{},
+        last_event_time: 0
+      }
     end
   end
 
@@ -50,16 +62,8 @@ defmodule Raft.Consensus do
   @spec action_cancel_timer(atom()) :: cancel_timer_action()
   defp action_cancel_timer(name), do: {:cancel_timer, name}
 
-  @spec action_send(addr(), RPC.t) :: send_action()
+  @spec action_send(list(addr()), RPC.t) :: send_action()
   defp action_send(who, msg), do: {:send, who, msg}
-
-  @spec last_log_index(Data.t) :: non_neg_integer()
-  def last_log_index(%Data{log: []}), do: 0
-  def last_log_index(%Data{log: [{i,_t,_v} | _rest]}), do: i
-
-  @spec last_log_term(Data.t) :: non_neg_integer()
-  def last_log_term(%Data{log: []}), do: 0
-  def last_log_term(%Data{log: [{_i,t,_v} | _rest]}), do: t
 
   @spec random_range(integer(), integer()) :: integer()
   def random_range(min, max) when is_integer(min) and is_integer(max) do
@@ -74,8 +78,8 @@ defmodule Raft.Consensus do
   end
 
   defp candidate_log_up_to_date?(%RPC.RequestVoteReq{} = req, %Data{} = data) do
-    lli = last_log_index(data)
-    llt = last_log_term(data)
+    lli = Log.last_index(data.log)
+    llt = Log.last_term(data.log)
     cond do
       req.term > llt -> true
       req.term < llt -> false
@@ -100,7 +104,6 @@ defmodule Raft.Consensus do
   @type timeout_event() :: {:timeout, atom()}
   @type message_event() :: {:recv, RPC.t}
   @type event() :: config_event() | timeout_event() | message_event()
-  @spec ev(atom(), event(), Data.t) :: {atom(), Data.t, list(action())}
 
   ## State transition functions
   
@@ -111,27 +114,54 @@ defmodule Raft.Consensus do
       [
         action_set_timer(:election, election_timeout()),
         action_send(data.nodes, %RPC.RequestVoteReq{term: term, from: data.me,
-            last_log_index: last_log_index(data), last_log_term: last_log_term(data)}),
+            last_log_index: Log.last_index(data.log), last_log_term: Log.last_term(data.log)}),
       ]
     }
   end
 
+  defp previous(_data, 1), do: {0, 0}
+  defp previous(data, ind) do
+    prev_index = ind - 1
+    {:ok, entry} = Log.get_entry(data, prev_index)
+    {prev_index, entry.term}
+  end
+
+  @spec send_entry(Data.t, Raft.addr(), non_neg_integer()) :: send_action()
+  def send_entry(data, node, ind) do
+    {prev_index, prev_term} = previous(data, ind)
+    {:ok, entry} = Log.get_entry(data.log, ind)
+
+    action_send([node],
+      %RPC.AppendEntriesReq{
+        from: data.me,
+        term: data.term,
+        prev_log_index: prev_index,
+        prev_log_term: prev_term,
+        leader_commit: data.commit_index,
+        entries: [entry],
+      })
+  end
+
   @spec become_leader(Data.t) :: event_result()
   def become_leader(%Data{} = data) do
-    {:leader, %{data | voted_for: nil, responses: %{}},
-      [
-        action_set_timer(:keepalive, @keep_alive_interval),
-        action_send(data.nodes, %RPC.AppendEntriesReq{term: data.term, from: data.me,
-          prev_log_index: last_log_index(data), prev_log_term: last_log_term(data), # &&& ? what if new entries?
-          entries: [], # ? what if new entries?
-          leader_commit: last_log_index(data)}),  # definitely not true &&&
-      ]}
+    lli = Log.last_index(data.log)
+    next_index = for n <- data.nodes, into: %{}, do: {n, lli + 1}
+    data = %{data | voted_for: nil, responses: %{}, next_index: next_index, match_index: %{}}
+    actions = 
+      for node <- data.nodes do
+        ind = next_index[node] # &&& ? thought it was different per node but it's lli+1 (see above)
+        send_entry(data, node, ind)
+      end
+    actions = [action_set_timer(:keepalive, @keep_alive_interval) | actions]
+    {:leader, data, actions}
   end
 
   ## INIT
   #
   # This state only exists from creation of a consenus module until it
   # has the configuration -- the addresses of the other nodes.
+
+  @spec ev(atom(), event(), Data.t) :: event_result()
 
   def ev(:init, {:config, nodes}, %Data{me: me} = data) do
     data = %{data | nodes: List.delete(nodes, me)}

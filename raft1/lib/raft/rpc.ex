@@ -28,7 +28,7 @@ defmodule Raft.RPC do
       term: non_neg_integer(),
       prev_log_index: non_neg_integer(),
       prev_log_term: non_neg_integer(),
-      entries: list(Raft.log_entry()),
+      entries: list(Raft.Log.Entry.t),
       leader_commit: non_neg_integer(),
     }
   end

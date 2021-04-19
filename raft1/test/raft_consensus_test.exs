@@ -2,6 +2,7 @@ defmodule Raft.ConsensusTest do
   use ExUnit.Case, async: true
   alias Raft.Consensus
   alias Raft.RPC
+  alias Raft.Log
 
   defp newdata() do
     %Consensus.Data{me: :a, term: 0, commit_index: 0, last_applied: 0, log: []}
@@ -45,18 +46,31 @@ defmodule Raft.ConsensusTest do
     {:follower, base_data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
     base_req = %RPC.RequestVoteReq{from: :b, term: 1, last_log_index: 0, last_log_term: 0}
     # test a set of voting scenarios in the follower state
+    log_with_one_entry = Log.new() |> Log.append(1, :noop, nil)
     [
       # initial election, accept
-      {[term: 0, voted_for: nil, log: []], [term: 1, from: :b, last_log_index: 0, last_log_term: 0], {1, true}},
+      {[term: 0, voted_for: nil, log: []],
+        [term: 1, from: :b, last_log_index: 0, last_log_term: 0],
+        {1, true}},
       # requestor term is lower than mine, reject
-      {[term: 7, voted_for: nil, log: []], [term: 6, from: :b, last_log_index: 0, last_log_term: 0], {7, false}},
+      {[term: 7, voted_for: nil, log: []],
+        [term: 6, from: :b, last_log_index: 0, last_log_term: 0],
+        {7, false}},
       # I already voted, reject
-      {[term: 0, voted_for: :c, log: []], [term: 1, from: :b, last_log_index: 0, last_log_term: 0], {0, false}},
+      {[term: 0, voted_for: :c, log: []],
+        [term: 1, from: :b, last_log_index: 0, last_log_term: 0],
+        {0, false}},
       # Requestor's logs are up to date, accept
-      {[term: 1, voted_for: nil, log: [{1, 1, :foo}]], [term: 2, from: :b, last_log_index: 1, last_log_term: 1], {2, true}},
+      {[term: 1, voted_for: nil, log: log_with_one_entry],
+        [term: 2, from: :b, last_log_index: 1, last_log_term: 1],
+        {2, true}},
       # Requestor's logs are not up to date, reject
-      {[term: 1, voted_for: nil, log: [{1, 1, :foo}]], [term: 2, from: :b, last_log_index: 0, last_log_term: 1], {2, true}},
-      {[term: 1, voted_for: nil, log: [{1, 1, :foo}]], [term: 2, from: :b, last_log_index: 1, last_log_term: 0], {2, true}},
+      {[term: 1, voted_for: nil, log: log_with_one_entry],
+        [term: 2, from: :b, last_log_index: 0, last_log_term: 1],
+        {2, true}},
+      {[term: 1, voted_for: nil, log: log_with_one_entry],
+        [term: 2, from: :b, last_log_index: 1, last_log_term: 0],
+        {2, true}},
     ]
     |> Enum.each(fn {data_overrides, request_overrides, {rsTerm, granted}} ->
       data = struct!(base_data, data_overrides)
