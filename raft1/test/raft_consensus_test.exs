@@ -58,9 +58,9 @@ defmodule Raft.ConsensusTest do
       {[term: 1, voted_for: nil, log: [{1, 1, :foo}]], [term: 2, from: :b, last_log_index: 0, last_log_term: 1], {2, true}},
       {[term: 1, voted_for: nil, log: [{1, 1, :foo}]], [term: 2, from: :b, last_log_index: 1, last_log_term: 0], {2, true}},
     ]
-    |> Enum.each(fn {dt, rq, {rsTerm, granted}} ->
-      data = struct!(base_data, dt)
-      req = struct!(base_req, rq)
+    |> Enum.each(fn {data_overrides, request_overrides, {rsTerm, granted}} ->
+      data = struct!(base_data, data_overrides)
+      req = struct!(base_req, request_overrides)
       assert {:follower, new_data, actions} = Consensus.ev(:follower, {:recv, req}, data)
       assert [sendcmd | rest] = actions
       assert {:send, [:b], %RPC.RequestVoteResp{from: :a, term: ^rsTerm, granted: ^granted}} = sendcmd
@@ -73,7 +73,7 @@ defmodule Raft.ConsensusTest do
     end)
   end
 
-  test "follower election timeout" do
+  test "follower become candidate and collect votes" do
     {:init, data, []} = Consensus.init(:a)
     {:follower, data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
     assert {:candidate, data, actions} = Consensus.ev(:follower, {:timeout, :election}, data)
@@ -82,6 +82,9 @@ defmodule Raft.ConsensusTest do
     assert [ {:set_timer, :election, _n},
       {:send, ^nodes, %RPC.RequestVoteReq{term: 1,from: ^me,last_log_index: 0,last_log_term: 0,}}
     ] = actions
+
+    {:leader, _data, _actions} = Consensus.ev(:candidate, {:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true}}, data)
+    # &&& test all the fields
   end
 
 end

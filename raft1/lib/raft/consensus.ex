@@ -4,15 +4,16 @@ defmodule Raft.Consensus do
 
   @election_timeout_min 150
   @election_timeout_max 300
+  @keep_alive_interval 50
 
   @type addr :: Raft.addr
   @type time :: Raft.time
-  @type log_entry :: {non_neg_integer(), non_neg_integer(), term()}
+  @type log_entry :: Raft.log_entry
 
   defmodule Data do
     @type addr :: Raft.addr
     @type time :: Raft.time
-    @type log_entry :: {non_neg_integer(), non_neg_integer(), term()}
+    @type log_entry :: Raft.log_entry
 
     defstruct [:term, :voted_for, :responses, :log, :me, :nodes, :leader, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
 
@@ -88,9 +89,6 @@ defmodule Raft.Consensus do
   def election_timeout(), do: random_range(@election_timeout_min, @election_timeout_max)
 
   defp reset_election_timer(), do: action_set_timer(:election, election_timeout())
-  defp become_leader() do
-    raise "oops"
-  end
 
   @spec init(addr()) :: event_result()
   def init(me) do
@@ -116,6 +114,18 @@ defmodule Raft.Consensus do
             last_log_index: last_log_index(data), last_log_term: last_log_term(data)}),
       ]
     }
+  end
+
+  @spec become_leader(Data.t) :: event_result()
+  def become_leader(%Data{} = data) do
+    {:leader, %{data | voted_for: nil, responses: %{}},
+      [
+        action_set_timer(:keepalive, @keep_alive_interval),
+        action_send(data.nodes, %RPC.AppendEntriesReq{term: data.term, from: data.me,
+          prev_log_index: last_log_index(data), prev_log_term: last_log_term(data), # &&& ? what if new entries?
+          entries: [], # ? what if new entries?
+          leader_commit: last_log_index(data)}),  # definitely not true &&&
+      ]}
   end
 
   ## INIT
@@ -174,8 +184,7 @@ defmodule Raft.Consensus do
     responses = Map.put(data.responses, resp.from, true)
     case quorum?(data, responses) do
       true ->
-        #become_leader(data)
-        raise "unimplemented"
+        become_leader(data)
       false ->
         {:candidate, %{data | responses: responses}, []}
     end
