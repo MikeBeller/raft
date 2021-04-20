@@ -146,7 +146,8 @@ defmodule Raft.Consensus do
   def become_leader(%Data{} = data) do
     lli = Log.last_index(data.log)
     next_index = for n <- data.nodes, into: %{}, do: {n, lli + 1}
-    data = %{data | voted_for: nil, responses: %{}, next_index: next_index, match_index: %{}}
+    log = Log.append(data.log, data.term, :nop, nil)  #force a commit_index
+    data = %{data | voted_for: nil, responses: %{}, next_index: next_index, log: log, match_index: %{}}
     actions = 
       for node <- data.nodes do
         ind = next_index[node] # &&& ? thought it was different per node but it's lli+1 (see above)

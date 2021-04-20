@@ -97,7 +97,9 @@ defmodule Raft.ConsensusTest do
       {:send, ^nodes, %RPC.RequestVoteReq{term: 1,from: ^me,last_log_index: 0,last_log_term: 0,}}
     ] = actions
 
-    {:leader, _data, _actions} = Consensus.ev(:candidate, {:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true}}, data)
+    {:leader, data, actions} = Consensus.ev(:candidate, {:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true}}, data)
+    IO.inspect data
+    IO.inspect actions
     # &&& test all the fields
   end
 
