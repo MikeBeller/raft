@@ -38,4 +38,9 @@ defmodule Raft.Log do
     entry = %Entry{index: ind + 1, term: term, type: type, data: data}
     [entry | log]
   end
+
+  @spec del_entry_and_following(t, non_neg_integer()) :: t
+  def del_entry_and_following(log, ind) do
+    Enum.drop_while(log, fn e -> e.index >= ind end)
+  end
 end

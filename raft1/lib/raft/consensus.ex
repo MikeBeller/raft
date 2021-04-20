@@ -106,13 +106,42 @@ defmodule Raft.Consensus do
   @type event() :: config_event() | timeout_event() | message_event()
 
   ## State transition functions
+
+  @spec step_down(Data.t, non_neg_integer()) :: Data.t
+  def step_down(%Data{} = data, term) do
+    %{data | term: term, responses: %{}, voted_for: nil} # &&& voted_for needs reset?
+  end
+
+  @spec matching_entry?(Log.t, non_neg_integer(), non_neg_integer()) :: boolean()
+  def matching_entry?(log, prev_ind, prev_term) do
+    case Log.get_entry(log, prev_ind) do
+      {:ok, entry} -> (entry.term == prev_term)
+      _ -> false
+    end
+  end
+
+  @spec delete_conflicting_entries(Log.t, Entry.t) :: Log.t
+  def delete_conflicting_entries(log, entry) do
+    case Log.get_entry(log, entry.index) do
+      {:ok, e} ->
+        if e.term == entry.term, do: log, else: Log.del_entry_and_following(log, entry.index)
+      _ -> log
+    end
+  end
+
+  @spec apply_entries(Log.t, list(Log.Entry.t)) :: Log.t
+  def apply_entries(log, entries) do
+    entries = Enum.sort(entries, fn e -> e.index end)
+    log = Enum.reduce(entries, log, fn e,l -> delete_conflicting_entries(l, e) end)
+    Enum.reduce(entries, log, fn e,l -> Log.append(l, e.term, e.type, e.data) end)
+  end
   
   @spec become_candidate(Data.t) :: event_result()
   def become_candidate(%Data{} = data) do
     term = data.term + 1
     {:candidate, %{data | term: term, voted_for: data.me, responses: %{data.me => true}},
       [
-        action_set_timer(:election, election_timeout()),
+        reset_election_timer(),
         action_send(data.nodes, %RPC.RequestVoteReq{term: term, from: data.me,
             last_log_index: Log.last_index(data.log), last_log_term: Log.last_term(data.log)}),
       ]
@@ -177,6 +206,22 @@ defmodule Raft.Consensus do
     become_candidate(data)
   end
 
+  def ev(:follower, {:recv, %RPC.AppendEntriesReq{} = req}, %Data{} = data) do
+    if req.term < data.term or !matching_entry?(data.log, req.prev_log_index, req.prev_log_term) do
+      {:follower, data,
+        [action_send([req.from],
+          %RPC.AppendEntriesResp{from: data.me, term: data.term, success: false})]}
+    else
+      log = apply_entries(data.log, req.entries)
+      commit = if req.leader_commit > data.commit_index do
+        min(req.leader_commit, Log.last_index(log))
+      else
+        data.commit_index
+      end
+      {:follower, %{data | log: log, commit_index: commit}, [reset_election_timer()]}
+    end
+  end
+
   # RequestVote received
   def ev(:follower, {:recv, %RPC.RequestVoteReq{} = req}, %Data{} = data) do
     if req.term >= data.term
@@ -202,7 +247,8 @@ defmodule Raft.Consensus do
   def ev(:candidate, {:recv, %RPC.RequestVoteResp{granted: false} = resp}, %Data{} = data) do
     cond do 
       resp.term > data.term ->
-        {:follower, %{data | term: resp.term, responses: %{}, leader: nil}, [reset_election_timer()]}
+        data = step_down(data, resp.term)
+        {:follower, data, [reset_election_timer()]}
       resp.term < data.term ->  #ignore
         {:candidate, data, []}
       true ->
@@ -225,6 +271,7 @@ defmodule Raft.Consensus do
   def ev(:candidate, {:recv, %RPC.AppendEntriesReq{term: term} = req} = event, %Data{} = data) do
     if term >= data.term do
       # step down to follower and process it
+      data = step_down(data, term)
       ev(:follower, event, data)
     else
       {:candidate, data, [action_send([req.from], %RPC.AppendEntriesResp{from: data.me, term: data.term, success: false})]}

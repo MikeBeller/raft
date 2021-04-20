@@ -31,4 +31,13 @@ defmodule Raft.LogTest do
     assert {:ok, %Log.Entry{type: :cmd}} = Log.get_entry(log, 2)
     assert {:ok, %Log.Entry{term: 2}} = Log.get_entry(log, 3)
   end
+
+  test "del_entry_and_following" do
+    log = Log.new()
+          |> Log.append(1, :noop, nil)
+          |> Log.append(1, :cmd, nil)
+          |> Log.append(2, :cmd, 3)
+    log2 = Log.del_entry_and_following(log, 2)
+    assert length(log2) == 1 and hd(log2).index == 1
+  end
 end
