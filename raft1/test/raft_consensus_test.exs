@@ -87,20 +87,43 @@ defmodule Raft.ConsensusTest do
     end)
   end
 
-  test "follower become candidate and collect votes" do
+  test "become candidate, test election process" do
+    # Init
     {:init, data, []} = Consensus.init(:a)
-    {:follower, data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
-    assert {:candidate, data, actions} = Consensus.ev(:follower, {:timeout, :election}, data)
+    {:follower, data, actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
 
-    %{nodes: nodes, me: me} = data
+    # Timeout of election timer -> become candidate
+    etimer = actions |> Enum.find_value(fn {:set_timer, :election, v} -> v end)
+    assert {:candidate, data, actions} = Consensus.ev(:follower, {:timeout, :election}, data)
+    assert %{nodes: nodes, me: me, term: 1} = data
     assert [ {:set_timer, :election, _n},
       {:send, ^nodes, %RPC.RequestVoteReq{term: 1,from: ^me,last_log_index: 0,last_log_term: 0,}}
     ] = actions
 
-    {:leader, data, actions} = Consensus.ev(:candidate, {:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true}}, data)
-    IO.inspect data
-    IO.inspect actions
-    # &&& test all the fields
-  end
+    # successful election
+    {:leader, _data2, actions} = Consensus.ev(:candidate,
+      {:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true}}, data)
+    assert [{:cancel_timer, :election}, {:set_timer, :heartbeat, timeout} | rpcs] = actions
+    assert timeout < (etimer / 2)
+    assert length(rpcs) == 2
+    assert Enum.map(rpcs, fn {:send, node, %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> node end) |> MapSet.new() == MapSet.new([[:b], [:c]])
+
+    # unsuccessful election -- received an AppendEntriesReq from new leader with equal term
+    #{:follower, _data, _actions} = Consensus.ev(:candidate,
+    #  {:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+    #    entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]}, data)
+
+    # received an AppendEntriesReq from potential leader with lower term -- reject and continue
+    assert {:candidate, _data, actions} = Consensus.ev(:candidate,
+        {:recv, %RPC.AppendEntriesReq{term: 0, from: :b, prev_log_index: 0, prev_log_term: 0,
+          entries: [%Log.Entry{index: 1, term: 0, type: :nop, data: nil}]}}, data)
+    assert [{:send, [:b], %RPC.AppendEntriesResp{success: false}}] = actions
+
+    # unsuccessful election -- election timer timeout
+
+    # unsuccessful election -- received a RequestVoteReq with higher term
+
+    # unsuccessful election -- quorum of negative votes ?? not needed?
+        end
 
 end

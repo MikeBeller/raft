@@ -153,7 +153,7 @@ defmodule Raft.Consensus do
         ind = next_index[node] # &&& ? thought it was different per node but it's lli+1 (see above)
         send_entry(data, node, ind)
       end
-    actions = [action_set_timer(:keepalive, @keep_alive_interval) | actions]
+    actions = [action_cancel_timer(:election), action_set_timer(:heartbeat, @keep_alive_interval) | actions]
     {:leader, data, actions}
   end
 
@@ -220,4 +220,15 @@ defmodule Raft.Consensus do
         {:candidate, %{data | responses: responses}, []}
     end
   end
+
+  # received and AppendEntriesReq from (putative) new leader
+  def ev(:candidate, {:recv, %RPC.AppendEntriesReq{term: term} = req} = event, %Data{} = data) do
+    if term >= data.term do
+      # step down to follower and process it
+      ev(:follower, event, data)
+    else
+      {:candidate, data, [action_send([req.from], %RPC.AppendEntriesResp{from: data.me, term: data.term, success: false})]}
+    end
+  end
+
 end
