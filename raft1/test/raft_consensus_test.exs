@@ -1,11 +1,33 @@
 defmodule Raft.ConsensusTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
   alias Raft.Consensus
   alias Raft.RPC
   alias Raft.Log
+  alias Consensus.Data
+
+  @spec event(Data.t, atom(), term()) :: {Data.t, list(Consensus.action())}
+  def event(data, type, arg) do
+    Consensus.ev(data, {type, arg})
+  end
+
+  @spec expect({Data.t, list(Consensus.action())}, atom(), function()) :: Data.t
+  def expect({data, actions}, state, check_fun) do
+    assert data.state == state
+    assert Enum.all?(
+      for action <- actions, do: check_fun.(action))
+      data
+      end
+
+  @spec base_consensus() :: Data.t
+  def base_consensus() do
+    Consensus.init(:a)
+    |> expect(:init, [])
+    |> event(:config, [:a, :b, :c])
+    |> expect(:follower, fn {:set_timer, :election, _} -> true end)
+  end
 
   defp newdata() do
-    %Consensus.Data{me: :a, term: 0, commit_index: 0, last_applied: 0, log: []}
+    %Consensus.Data{state: :init, me: :a, term: 0, commit_index: 0, last_applied: 0, log: []}
   end
 
   test "random range" do
@@ -29,22 +51,20 @@ defmodule Raft.ConsensusTest do
   end
 
   test "init waits for nodes" do
-    assert {:init, data, []} = Consensus.init(:a)
-    assert %Consensus.Data{me: :a, term: 0, commit_index: 0, last_applied: 0, log: []} = data
+    assert {%Data{state: :init, me: :a, term: 0}, []} = Consensus.init(:a)
   end
 
   test "config leads to follower" do
-    {:init, data, []} = Consensus.init(:a)
-    assert {:follower, new_data, actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
-    assert MapSet.new(new_data.nodes) == MapSet.new([:b, :c])
-    assert [{:set_timer, :election, n}] = actions
-    assert n >= 150 and n <= 300
+    Consensus.init(:a)
+    |> expect(:init, [])
+    |> event(:config, [:a, :b, :c])
+    |> expect(:follower, fn {:set_timer, :election, _} -> true end)
   end
 
   test "vote request as follower" do
-    {:init, data, []} = Consensus.init(:a)
-    {:follower, base_data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
+    base_data = base_consensus()
     base_req = %RPC.RequestVoteReq{from: :b, term: 1, last_log_index: 0, last_log_term: 0}
+
     # test a set of voting scenarios in the follower state
     log_with_one_entry = Log.new() |> Log.append(1, :noop, nil)
     [
@@ -75,7 +95,8 @@ defmodule Raft.ConsensusTest do
     |> Enum.each(fn {data_overrides, request_overrides, {rsTerm, granted}} ->
       data = struct!(base_data, data_overrides)
       req = struct!(base_req, request_overrides)
-      assert {:follower, new_data, actions} = Consensus.ev(:follower, {:recv, req}, data)
+
+      {%Data{state: :follower} = new_data, actions} = data |> event(:recv, req)
       assert [sendcmd | rest] = actions
       assert {:send, [:b], %RPC.RequestVoteResp{from: :a, term: ^rsTerm, granted: ^granted}} = sendcmd
       if granted do
@@ -89,56 +110,71 @@ defmodule Raft.ConsensusTest do
 
   test "become candidate, test election process" do
     # Init
-    {:init, data, []} = Consensus.init(:a)
-    {:follower, data, actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
+    base_data = base_consensus()
+    me = base_data.me
+    nodes = base_data.nodes
 
     # Timeout of election timer -> become candidate
-    etimer = actions |> Enum.find_value(fn {:set_timer, :election, v} -> v end)
-    assert {:candidate, data, actions} = Consensus.ev(:follower, {:timeout, :election}, data)
-    assert %Consensus.Data{nodes: nodes, me: me, term: 1} = data
-    assert [ {:set_timer, :election, _n},
-      {:send, ^nodes, %RPC.RequestVoteReq{term: 1,from: ^me,last_log_index: 0,last_log_term: 0,}}
-    ] = actions
+    data = base_data
+           |> event(:timeout, :election)
+           |> expect(:candidate,
+             fn
+               {:set_timer, :election, _} -> true
+               {:send, ^nodes, %RPC.RequestVoteReq{term: 1, from: ^me, last_log_index: 0, last_log_term: 0}} -> true
+               _ -> false
+             end)
+
 
     # successful election
-    {:leader, _data2, actions} = Consensus.ev(:candidate,
-      {:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true}}, data)
-    assert [{:cancel_timer, :election}, {:set_timer, :heartbeat, timeout} | rpcs] = actions
-    assert timeout < (etimer / 2)
-    assert length(rpcs) == 2
-    assert Enum.map(rpcs, fn {:send, node, %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> node end) |> MapSet.new() == MapSet.new([[:b], [:c]])
+    data
+    |> event(:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true})
+    |> expect(:leader,
+      fn
+        {:cancel_timer, :election} -> true
+        {:set_timer, :heartbeat, _} -> true
+        {:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> true
+        {:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> true
+      end)
 
-    # unsuccessful election -- received an AppendEntriesReq from new leader with equal term
-    {:follower, _data, _actions} = Consensus.ev(:candidate,
-      {:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
-        entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]}}, data)
+    # unsuccessful election -- recv AEReq from new leader with equal term
+    data
+    |> event(:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+      entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
+      |> expect(:follower, fn _ -> true end)
 
     # received an AppendEntriesReq from potential leader with lower term -- reject and continue
-    assert {:candidate, _data, actions} = Consensus.ev(:candidate,
-        {:recv, %RPC.AppendEntriesReq{term: 0, from: :b, prev_log_index: 0, prev_log_term: 0,
-          entries: [%Log.Entry{index: 1, term: 0, type: :nop, data: nil}]}}, data)
-    assert [{:send, [:b], %RPC.AppendEntriesResp{success: false}}] = actions
+    data
+    |> event(:recv, %RPC.AppendEntriesReq{term: 0, from: :b, prev_log_index: 0, prev_log_term: 0,
+      entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
+      |> expect(:candidate,
+        fn
+          {:send, [:b], %RPC.AppendEntriesResp{success: false}} -> true
+        end)
 
     # unsuccessful election -- election timer timeout
-    assert {:candidate, data, actions} = Consensus.ev(:candidate, {:timeout, :election}, data)
-    assert [{:set_timer, :election, _v}, 
-      {:send, ^nodes,
-        %RPC.RequestVoteReq{term: 1,from: ^me, last_log_index: 0,last_log_term: 0,}}] = actions
-    assert %Consensus.Data{responses: %{}} = data
+    data
+    |> event(:timeout, :election)
+    |> expect(:candidate,
+      fn
+        {:set_timer, :election, _v} -> true
+        {:send, _, %RPC.RequestVoteReq{term: 1,from: ^me, last_log_index: 0,last_log_term: 0}} -> true
+      end)
 
-    # unsuccessful election -- received a RequestVoteReq with higher term
+    # test receive requestvotereq with higher term?
 
-    end
+  end
 
-    test "appendentries processing as brand new follower" do
-      {:init, data, []} = Consensus.init(:a)
-      assert {:follower, data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
 
-      assert {:follower, data, actions} = Consensus.ev(:follower,
-        {:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
-          entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]}}, data)
-      assert %Consensus.Data{log: _log} = data
-      assert [{:set_timer, :election, _}, {:send, [:b], %RPC.AppendEntriesResp{success: true}}] = actions
-    end
+  test "appendentries processing as brand new follower" do
+    base_consensus()
+    |> event(:recv,
+      %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+      entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
+    |> expect(:follower,
+      fn
+        {:set_timer, :election, _} -> true
+        {:send, [:b], %RPC.AppendEntriesResp{success: true}} -> true
+      end)
+  end
 
 end
