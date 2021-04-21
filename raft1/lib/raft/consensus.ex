@@ -114,13 +114,17 @@ defmodule Raft.Consensus do
 
   @spec matching_entry?(Log.t, non_neg_integer(), non_neg_integer()) :: boolean()
   def matching_entry?(log, prev_ind, prev_term) do
-    case Log.get_entry(log, prev_ind) do
-      {:ok, entry} -> (entry.term == prev_term)
-      _ -> false
+    if prev_ind == 0 and prev_term == 0 do
+      true
+    else
+      case Log.get_entry(log, prev_ind) do
+        {:ok, entry} -> (entry.term == prev_term)
+        _ -> false
+      end
     end
   end
 
-  @spec delete_conflicting_entries(Log.t, Entry.t) :: Log.t
+  @spec delete_conflicting_entries(Log.t, Log.Entry.t) :: Log.t
   def delete_conflicting_entries(log, entry) do
     case Log.get_entry(log, entry.index) do
       {:ok, e} ->
@@ -131,7 +135,7 @@ defmodule Raft.Consensus do
 
   @spec apply_entries(Log.t, list(Log.Entry.t)) :: Log.t
   def apply_entries(log, entries) do
-    entries = Enum.sort(entries, fn e -> e.index end)
+    entries = Enum.sort_by(entries, fn e -> e.index end)
     log = Enum.reduce(entries, log, fn e,l -> delete_conflicting_entries(l, e) end)
     Enum.reduce(entries, log, fn e,l -> Log.append(l, e.term, e.type, e.data) end)
   end
@@ -174,7 +178,7 @@ defmodule Raft.Consensus do
   def become_leader(%Data{} = data) do
     lli = Log.last_index(data.log)
     next_index = for n <- data.nodes, into: %{}, do: {n, lli + 1}
-    log = Log.append(data.log, data.term, :nop, nil)  #force a commit_index
+    log = Log.append(data.log, data.term, :noop, nil)  #force a commit_index
     data = %{data | voted_for: nil, responses: %{}, next_index: next_index, log: log, match_index: %{}}
     actions = 
       for node <- data.nodes do
@@ -206,7 +210,7 @@ defmodule Raft.Consensus do
   end
 
   def ev(:follower, {:recv, %RPC.AppendEntriesReq{} = req}, %Data{} = data) do
-    if req.term < data.term or !matching_entry?(data.log, req.prev_log_index, req.prev_log_term) do
+    if req.term < data.term or ! matching_entry?(data.log, req.prev_log_index, req.prev_log_term) do
       {:follower, data,
         [action_send([req.from],
           %RPC.AppendEntriesResp{from: data.me, term: data.term, success: false})]}
@@ -217,7 +221,11 @@ defmodule Raft.Consensus do
       else
         data.commit_index
       end
-      {:follower, %{data | log: log, commit_index: commit}, [reset_election_timer()]}
+      {:follower, %{data | log: log, commit_index: commit},
+        [reset_election_timer(),
+         action_send([req.from],
+           %RPC.AppendEntriesResp{from: data.me, term: req.term, success: true})
+        ]}
     end
   end
 

@@ -130,4 +130,15 @@ defmodule Raft.ConsensusTest do
 
     end
 
+    test "appendentries processing as brand new follower" do
+      {:init, data, []} = Consensus.init(:a)
+      assert {:follower, data, _actions} = Consensus.ev(:init, {:config, [:a, :b, :c]}, data)
+
+      assert {:follower, data, actions} = Consensus.ev(:follower,
+        {:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+          entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]}}, data)
+      assert %Consensus.Data{log: _log} = data
+      assert [{:set_timer, :election, _}, {:send, [:b], %RPC.AppendEntriesResp{success: true}}] = actions
+    end
+
 end
