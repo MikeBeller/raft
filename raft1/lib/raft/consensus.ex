@@ -136,13 +136,12 @@ defmodule Raft.Consensus do
     Enum.reduce(entries, log, fn e,l -> Log.append(l, e.term, e.type, e.data) end)
   end
   
-  @spec become_candidate(Data.t) :: event_result()
-  def become_candidate(%Data{} = data) do
-    term = data.term + 1
-    {:candidate, %{data | term: term, voted_for: data.me, responses: %{data.me => true}},
+  @spec start_election(Data.t) :: event_result()
+  def start_election(%Data{} = data) do
+    {:candidate, %{data | voted_for: data.me, responses: %{data.me => true}},
       [
         reset_election_timer(),
-        action_send(data.nodes, %RPC.RequestVoteReq{term: term, from: data.me,
+        action_send(data.nodes, %RPC.RequestVoteReq{term: data.term, from: data.me,
             last_log_index: Log.last_index(data.log), last_log_term: Log.last_term(data.log)}),
       ]
     }
@@ -203,7 +202,7 @@ defmodule Raft.Consensus do
 
   # Election timeout
   def ev(:follower, {:timeout, :election}, %Data{} = data) do
-    become_candidate(data)
+    start_election(%{data | term: data.term + 1})
   end
 
   def ev(:follower, {:recv, %RPC.AppendEntriesReq{} = req}, %Data{} = data) do
@@ -278,4 +277,8 @@ defmodule Raft.Consensus do
     end
   end
 
+  # election timeout
+  def ev(:candidate, {:timeout, :election}, %Data{} = data) do
+    start_election(data)
+  end
 end

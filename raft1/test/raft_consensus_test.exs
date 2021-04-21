@@ -95,7 +95,7 @@ defmodule Raft.ConsensusTest do
     # Timeout of election timer -> become candidate
     etimer = actions |> Enum.find_value(fn {:set_timer, :election, v} -> v end)
     assert {:candidate, data, actions} = Consensus.ev(:follower, {:timeout, :election}, data)
-    assert %{nodes: nodes, me: me, term: 1} = data
+    assert %Consensus.Data{nodes: nodes, me: me, term: 1} = data
     assert [ {:set_timer, :election, _n},
       {:send, ^nodes, %RPC.RequestVoteReq{term: 1,from: ^me,last_log_index: 0,last_log_term: 0,}}
     ] = actions
@@ -109,9 +109,9 @@ defmodule Raft.ConsensusTest do
     assert Enum.map(rpcs, fn {:send, node, %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> node end) |> MapSet.new() == MapSet.new([[:b], [:c]])
 
     # unsuccessful election -- received an AppendEntriesReq from new leader with equal term
-    #{:follower, _data, _actions} = Consensus.ev(:candidate,
-    #  {:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
-    #    entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]}, data)
+    {:follower, _data, _actions} = Consensus.ev(:candidate,
+      {:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+        entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]}}, data)
 
     # received an AppendEntriesReq from potential leader with lower term -- reject and continue
     assert {:candidate, _data, actions} = Consensus.ev(:candidate,
@@ -120,10 +120,14 @@ defmodule Raft.ConsensusTest do
     assert [{:send, [:b], %RPC.AppendEntriesResp{success: false}}] = actions
 
     # unsuccessful election -- election timer timeout
+    assert {:candidate, data, actions} = Consensus.ev(:candidate, {:timeout, :election}, data)
+    assert [{:set_timer, :election, _v}, 
+      {:send, ^nodes,
+        %RPC.RequestVoteReq{term: 1,from: ^me, last_log_index: 0,last_log_term: 0,}}] = actions
+    assert %Consensus.Data{responses: %{}} = data
 
     # unsuccessful election -- received a RequestVoteReq with higher term
 
-    # unsuccessful election -- quorum of negative votes ?? not needed?
-        end
+    end
 
 end
