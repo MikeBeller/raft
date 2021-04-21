@@ -10,20 +10,22 @@ defmodule Raft.ConsensusTest do
     Consensus.ev(data, {type, arg})
   end
 
-  @spec expect({Data.t, list(Consensus.action())}, atom(), function()) :: Data.t
-  def expect({data, actions}, state, check_fun) do
+  @spec expect({Data.t, list(Consensus.action())}, atom(), list(function())) :: Data.t
+  def expect({data, actions}, state, funs) do
     assert data.state == state
-    assert Enum.all?(
-      for action <- actions, do: check_fun.(action))
-      data
-      end
+    assert length(funs) == length(actions)
+    IO.puts "#{length(funs)} #{length(actions)} #{inspect actions}"
+    assert Enum.all?(actions,
+      fn a -> Enum.any?(funs, fn f -> f.(a) end) end)
+    data
+  end
 
   @spec base_consensus() :: Data.t
   def base_consensus() do
     Consensus.init(:a)
     |> expect(:init, [])
     |> event(:config, [:a, :b, :c])
-    |> expect(:follower, fn {:set_timer, :election, _} -> true end)
+    |> expect(:follower, [fn {:set_timer, :election, _} -> true end])
   end
 
   defp newdata() do
@@ -58,7 +60,7 @@ defmodule Raft.ConsensusTest do
     Consensus.init(:a)
     |> expect(:init, [])
     |> event(:config, [:a, :b, :c])
-    |> expect(:follower, fn {:set_timer, :election, _} -> true end)
+    |> expect(:follower, [fn {:set_timer, :election, _} -> true end])
   end
 
   test "vote request as follower" do
@@ -117,48 +119,38 @@ defmodule Raft.ConsensusTest do
     # Timeout of election timer -> become candidate
     data = base_data
            |> event(:timeout, :election)
-           |> expect(:candidate,
-             fn
-               {:set_timer, :election, _} -> true
-               {:send, ^nodes, %RPC.RequestVoteReq{term: 1, from: ^me, last_log_index: 0, last_log_term: 0}} -> true
-               _ -> false
-             end)
-
+           |> expect(:candidate, [
+             fn {:set_timer, :election, _} -> true end,
+             fn {:send, ^nodes, %RPC.RequestVoteReq{term: 1, from: ^me, last_log_index: 0, last_log_term: 0}} -> true end])
 
     # successful election
     data
     |> event(:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true})
     |> expect(:leader,
-      fn
-        {:cancel_timer, :election} -> true
-        {:set_timer, :heartbeat, _} -> true
-        {:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> true
-        {:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> true
-      end)
+      [
+        fn {:cancel_timer, :election} -> true end,
+        fn {:set_timer, :heartbeat, _} -> true end,
+        fn {:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> true end,
+        fn {:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}} -> true end,])
 
     # unsuccessful election -- recv AEReq from new leader with equal term
     data
     |> event(:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
       entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
-      |> expect(:follower, fn _ -> true end)
+      |> expect(:follower, [fn _ -> true end])
 
     # received an AppendEntriesReq from potential leader with lower term -- reject and continue
     data
     |> event(:recv, %RPC.AppendEntriesReq{term: 0, from: :b, prev_log_index: 0, prev_log_term: 0,
       entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
-      |> expect(:candidate,
-        fn
-          {:send, [:b], %RPC.AppendEntriesResp{success: false}} -> true
-        end)
+    |> expect(:candidate, [fn {:send, [:b], %RPC.AppendEntriesResp{success: false}} -> true end])
 
     # unsuccessful election -- election timer timeout
     data
     |> event(:timeout, :election)
-    |> expect(:candidate,
-      fn
-        {:set_timer, :election, _v} -> true
-        {:send, _, %RPC.RequestVoteReq{term: 1,from: ^me, last_log_index: 0,last_log_term: 0}} -> true
-      end)
+    |> expect(:candidate, [
+      fn {:set_timer, :election, _v} -> true end,
+      fn {:send, _, %RPC.RequestVoteReq{term: 1,from: ^me, last_log_index: 0,last_log_term: 0}} -> true end])
 
     # test receive requestvotereq with higher term?
 
@@ -170,11 +162,10 @@ defmodule Raft.ConsensusTest do
     |> event(:recv,
       %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
       entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
-    |> expect(:follower,
-      fn
-        {:set_timer, :election, _} -> true
-        {:send, [:b], %RPC.AppendEntriesResp{success: true}} -> true
-      end)
+    |> expect(:follower, [
+      fn {:set_timer, :election, _} -> true end,
+      fn {:send, [:b], %RPC.AppendEntriesResp{success: true}} -> true end
+    ])
   end
 
 end
