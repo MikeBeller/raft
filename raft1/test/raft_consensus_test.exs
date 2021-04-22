@@ -173,13 +173,39 @@ defmodule Raft.ConsensusTest do
 
 
   test "appendentries processing as brand new follower" do
-    base_consensus()
-    |> event(:recv,
-      %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
-      entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
+    data = base_consensus()
+    # document some expected initial fields
+    %Data{state: :follower, term: 0, log: []} = data
+
+    entry1 = %Log.Entry{index: 1, term: 1, type: :nop, data: nil}
+    entry2 = %Log.Entry{index: 2, term: 1, type: :cmd, data: 123}
+    entry3 = %Log.Entry{index: 3, term: 2, type: :cmd, data: 234}
+    req = %RPC.AppendEntriesReq{term: 1, from: :b,
+      prev_log_index: 0, prev_log_term: 0, entries: [entry1]}
+
+    # Vanilla successful append entries
+    new_data = data  # capture new_data for tests further down
+    |> event(:recv, req)
     |> expect(:follower, [
       match({:set_timer, :election, _}),
-      match({:send, [:b], %RPC.AppendEntriesResp{success: true}}),
-    ])
+      match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
+    |> event(:recv, %{req | prev_log_index: 1, prev_log_term: 1, entries: [entry2]})
+    |> expect(:follower, [
+      match({:set_timer, :election, _}),
+      match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
+    assert Log.last_index(new_data.log) == 2
+
+    # Failure -- received term less than current term  (5.1)
+    %{data | term: 2}
+    |> event(:recv, req)
+    |> expect(:follower, [
+      match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: false}})])
+
+    # Failure -- log doesn't contain entry with term prev_log_term at index prev_log_index(5.3)
+    new_data  # from above
+    |> event(:recv, %{req | term: 2, prev_log_index: 2, prev_log_term: 2, entries: [entry3]})
+    |> expect(:follower, [
+      match({:send, [:b], %RPC.AppendEntriesResp{term: _, success: false}})])
+
   end
 end
