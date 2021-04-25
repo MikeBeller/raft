@@ -172,7 +172,7 @@ defmodule Raft.ConsensusTest do
   end
 
 
-  test "appendentries processing as brand new follower" do
+  test "appendentries processing as follower" do
     data = base_consensus()
     # document some expected initial fields
     %Data{state: :follower, term: 0, log: []} = data
@@ -207,5 +207,47 @@ defmodule Raft.ConsensusTest do
     |> expect(:follower, [
       match({:send, [:b], %RPC.AppendEntriesResp{term: _, success: false}})])
 
+  end
+
+  test "conflicting entries" do
+    data = base_consensus()
+    # document some expected initial fields
+    %Data{state: :follower, term: 0, log: []} = data
+
+    entry1 = %Log.Entry{index: 1, term: 1, type: :nop, data: nil}
+    entry2 = %Log.Entry{index: 2, term: 1, type: :cmd, data: 123}
+    entry3 = %Log.Entry{index: 3, term: 2, type: :cmd, data: 234}
+    data = %{data | term: 1, commit_index: 1, log: [entry3, entry2, entry1]}  # entries are reversed in log
+
+    entry2b = %Log.Entry{index: 2, term: 2, type: :noop, data: nil}
+    entry3b = %Log.Entry{index: 3, term: 2, type: :cmd, data: 456}
+
+    # test with higher commit index
+    req = %RPC.AppendEntriesReq{term: 2, from: :b,
+      prev_log_index: 1, prev_log_term: 1, entries: [entry2b, entry3b], leader_commit: 4}
+
+    new_data = data
+    |> event(:recv, req)
+    |> expect(:follower, [
+      match({:set_timer, :election, _}),
+      match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: true}})
+    ])
+
+    assert new_data.log == [entry3b, entry2b, entry1]
+    assert new_data.commit_index == 3
+
+    # test with equal commit index
+    req = %RPC.AppendEntriesReq{term: 2, from: :b,
+      prev_log_index: 1, prev_log_term: 1, entries: [entry2b, entry3b], leader_commit: 1}
+
+    new_data = data
+    |> event(:recv, req)
+    |> expect(:follower, [
+      match({:set_timer, :election, _}),
+      match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: true}})
+    ])
+
+    assert new_data.log == [entry3b, entry2b, entry1]
+    assert new_data.commit_index == 1
   end
 end
