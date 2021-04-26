@@ -1,3 +1,9 @@
 # Raft
 
-Phase 1 -- put the whole algorithm in a single server.ex based on GenStateMachine
+Phase 1 -- a pure functional library implementing the Raft consensus
+state machine without any server processes.
+
+Note also the "event/expect" functions/macros in raft_consensus_test.ex
+which make it very easy to write and read the tests.
+
+
