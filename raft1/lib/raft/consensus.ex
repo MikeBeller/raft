@@ -290,4 +290,16 @@ defmodule Raft.Consensus do
   def ev(%Data{state: :candidate} = data, {:timeout, :election}) do
     start_election(data)
   end
+
+  ## LEADER
+
+  # step down to follower if AppendEntriesResp received with higher term
+  def ev(%Data{state: :leader} = data, {:recv, %RPC.AppendEntriesResp{success: false} = req}) do
+    if req.term >= data.term do
+      # step down to follower
+      {step_down_to_follower(data, req.term), [reset_election_timer()]}
+    else
+      raise "unimplemented"
+    end
+  end
 end

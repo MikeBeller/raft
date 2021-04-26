@@ -38,6 +38,29 @@ defmodule Raft.ConsensusTest do
     %Consensus.Data{state: :init, me: :a, term: 0, commit_index: 0, last_applied: 0, log: []}
   end
 
+  # get me a leader!
+  defp leader() do
+    base_data = base_consensus()
+    me = base_data.me
+    nodes = base_data.nodes
+
+    base_data
+    |> event(:timeout, :election)
+    |> expect(:candidate, [
+      match({:set_timer, :election, _}),
+      match({:send, ^nodes, %RPC.RequestVoteReq{term: 1, from: ^me, last_log_index: 0, last_log_term: 0}
+      })
+    ])
+    |> event(:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true})
+    |> expect(:leader,
+      [
+        match({:cancel_timer, :election}),
+        match({:set_timer, :heartbeat, _}),
+        match({:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}}),
+        match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}}),
+      ])
+  end
+
   test "random range" do
     all = for _ <- 1..1000, into: MapSet.new(), do: Consensus.random_range(2,13)
     assert all == MapSet.new(2..13)
@@ -251,7 +274,11 @@ defmodule Raft.ConsensusTest do
     assert new_data.commit_index == 1
   end
 
-  test "Leader testing -- send empty AppendEntries" do
-
+  test "Leader testing -- step down if unsuccessful AppendEntries response has higher term" do
+    leader()
+    |> event(:recv, %RPC.AppendEntriesResp{success: false, term: 2})
+    |> expect(:follower, [
+      match({:set_timer, :election, _})
+    ])
   end
 end
