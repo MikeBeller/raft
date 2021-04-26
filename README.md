@@ -1,11 +1,19 @@
 # raft
 
-Explorations of the RAFT consensus protocol using Elixir.
+RAFT consensus protocol in Elixir.
 Each subdirectory contains a working version of the project as
 it progressively increases in complexity.
 
-NOTE this is for pedagogical purposes and my own explorations.
-Not for production use!
+NOTE this is for pedagogical purposes and my own explorations
+of RAFT and Elixir.  Not intended for production use!
+
+## References
+
+In working on this project I made use of / reference to the following:
+
+[Raft site and paper](https://raft.github.io/)
+[Erlang implementation of Raft](https://github.com/rabbitmq/ra)
+[Elixir implementation of Raft](https://github.com/toniqsystems/raft)
 
 ## Raft1
 
