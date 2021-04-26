@@ -172,7 +172,7 @@ defmodule Raft.ConsensusTest do
   end
 
 
-  test "appendentries processing as follower" do
+  test "AppendEntries processing as follower" do
     data = base_consensus()
     # document some expected initial fields
     %Data{state: :follower, term: 0, log: []} = data
@@ -209,7 +209,7 @@ defmodule Raft.ConsensusTest do
 
   end
 
-  test "conflicting entries" do
+  test "AppendEntries conflicting entries" do
     data = base_consensus()
     # document some expected initial fields
     %Data{state: :follower, term: 0, log: []} = data
@@ -249,5 +249,9 @@ defmodule Raft.ConsensusTest do
 
     assert new_data.log == [entry3b, entry2b, entry1]
     assert new_data.commit_index == 1
+  end
+
+  test "Leader election -- send empty AppendEntries" do
+
   end
 end
