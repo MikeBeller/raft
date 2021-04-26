@@ -251,7 +251,7 @@ defmodule Raft.ConsensusTest do
     assert new_data.commit_index == 1
   end
 
-  test "Leader election -- send empty AppendEntries" do
+  test "Leader testing -- send empty AppendEntries" do
 
   end
 end

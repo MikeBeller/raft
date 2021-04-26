@@ -4,6 +4,9 @@ Explorations of the RAFT consensus protocol using Elixir.
 Each subdirectory contains a working version of the project as
 it progressively increases in complexity.
 
+NOTE this is for pedagogical purposes and my own explorations.
+Not for production use!
+
 ## Raft1
 
 This version is a purely functional library which implements
