@@ -293,13 +293,30 @@ defmodule Raft.Consensus do
 
   ## LEADER
 
-  # step down to follower if AppendEntriesResp received with higher term
+  def ev(%Data{state: :leader} = data, {:recv, %RPC.WriteReq{} = req}) do
+    # put in log
+    # send aereqs to everyone
+    # "wait" for quorum of responses (functional API can't actually wait -- need to use callbacks)
+    #  does this mean we need a table of id's to pending responses?
+    # advance commit index
+    # when aeresps come back, send responses to client
+  end
+
+  # positive AppendEntriesResp processing
+  def ev(%Data{state: :leader} = data, {:recv, %RPC.AppendEntriesResp{success: true} = req}) do
+    raise "unimplemented"
+  end
+
+  # Negative AppendEntriesResp processing
   def ev(%Data{state: :leader} = data, {:recv, %RPC.AppendEntriesResp{success: false} = req}) do
-    if req.term >= data.term do
-      # step down to follower
-      {step_down_to_follower(data, req.term), [reset_election_timer()]}
-    else
-      raise "unimplemented"
+    cond do
+      req.term > data.term ->
+        {step_down_to_follower(data, req.term), [reset_election_timer()]}
+      req.term < data.term ->
+        {data, []}  # delayed message, ignore
+      true ->
+        # step back and try again
+        raise "unimplemented"
     end
   end
 end

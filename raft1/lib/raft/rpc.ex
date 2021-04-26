@@ -43,5 +43,24 @@ defmodule Raft.RPC do
     }
   end
 
+  defmodule WriteReq do
+    defstruct [:from, :command]
+
+    @type t :: %__MODULE__ {
+      from: Raft.addr(),
+      command: any(),
+    }
+  end
+
+  defmodule WriteResp do
+    defstruct [:from, :result, :leader]
+
+    @type t :: %__MODULE__ {
+      from: Raft.addr(),
+      result: :ok | :error,
+      leader: nil | Raft.addr(),
+    }
+  end
+
   @type t :: RequestVoteReq.t | RequestVoteResp.t | AppendEntriesReq.t | AppendEntriesResp.t
 end

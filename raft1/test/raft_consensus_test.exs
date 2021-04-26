@@ -274,11 +274,17 @@ defmodule Raft.ConsensusTest do
     assert new_data.commit_index == 1
   end
 
-  test "Leader testing -- step down if unsuccessful AppendEntries response has higher term" do
+  test "Leader testing -- step down if unsuccessful AppendEntriesResp has higher term" do
     leader()
     |> event(:recv, %RPC.AppendEntriesResp{success: false, term: 2})
     |> expect(:follower, [
       match({:set_timer, :election, _})
     ])
+  end
+
+  test "Leader testing -- ignore AppendEntriesResp with lower term" do
+    leader()
+    |> event(:recv, %RPC.AppendEntriesResp{success: false, term: 0})
+    |> expect(:leader, [ ])
   end
 end
