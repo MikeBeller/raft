@@ -14,7 +14,7 @@ defmodule Raft.Consensus do
     @type addr :: Raft.addr
     @type time :: Raft.time
 
-    defstruct [:state, :term, :voted_for, :responses, :log, :me, :nodes, :leader, :commit_index, :last_applied, :next_index, :match_index, :last_event_time]
+    defstruct [:state, :term, :voted_for, :responses, :log, :me, :nodes, :leader, :commit_index, :last_applied, :next_index, :match_index, :replies]
 
     @type t :: %__MODULE__{
       state: :init | :follower | :candidate | :leader,
@@ -29,7 +29,7 @@ defmodule Raft.Consensus do
       last_applied: non_neg_integer(),
       next_index: %{addr() => non_neg_integer()},
       match_index: %{addr() => non_neg_integer()},
-      last_event_time: time(),
+      replies: %{non_neg_integer() => {addr(), any()}},  # pending write replies
     }
 
     def new() do
@@ -46,7 +46,7 @@ defmodule Raft.Consensus do
         last_applied: 0,
         next_index: %{},
         match_index: %{},
-        last_event_time: 0
+        replies: %{},
       }
     end
   end
@@ -91,6 +91,24 @@ defmodule Raft.Consensus do
     end
   end
 
+  defp majority_greater_or_equal?(match_index, ind) do
+    nn = map_size(match_index)
+    nc = for {_k,v} <- match_index, v >= ind, do: 1 |> Enum.sum
+    nc > nn / 2
+  end
+
+  defp calc_commit_index(term, commit_index, match_index, log) do
+    lli = Log.last_index(log)
+
+    # will always be true for commit_index so defaults to commit_index
+    commit_index..lli
+    |> Enum.reverse()
+    |> Enum.find(fn ind ->
+      {:ok, entry} = Log.get_entry(log, ind) # must be there
+      entry.term == term and majority_greater_or_equal?(match_index, ind)
+    end)
+  end
+
   @spec election_timeout() :: non_neg_integer()
   def election_timeout(), do: random_range(@election_timeout_min, @election_timeout_max)
 
@@ -109,9 +127,9 @@ defmodule Raft.Consensus do
 
   ## State transition functions
 
-  @spec step_down_to_follower(Data.t, non_neg_integer()) :: Data.t
-  def step_down_to_follower(%Data{} = data, term) do
-    %{data | state: :follower, term: term, responses: %{}, voted_for: nil} # &&& voted_for needs reset?
+  @spec step_down_to_follower(Data.t, non_neg_integer(), addr()) :: Data.t
+  def step_down_to_follower(%Data{} = data, term, leader \\ nil) do
+    %{data | state: :follower, term: term, leader: leader, responses: %{}, voted_for: nil} # &&& voted_for needs reset?
   end
 
   @spec matching_entry?(Log.t, non_neg_integer(), non_neg_integer()) :: boolean()
@@ -180,8 +198,9 @@ defmodule Raft.Consensus do
   def become_leader(%Data{} = data) do
     lli = Log.last_index(data.log)
     next_index = for n <- data.nodes, into: %{}, do: {n, lli + 1}
+    match_index = for n <- data.nodes, into: %{}, do: {n, 0}
     log = Log.append(data.log, data.term, :noop, nil)  #force a commit_index
-    data = %{data | voted_for: nil, responses: %{}, next_index: next_index, log: log, match_index: %{}}
+    data = %{data | voted_for: nil, responses: %{}, next_index: next_index, log: log, match_index: match_index, replies: %{}}
     actions = 
       for node <- data.nodes do
         ind = next_index[node] # &&& ? thought it was different per node but it's lli+1 (see above)
@@ -223,7 +242,7 @@ defmodule Raft.Consensus do
       else
         data.commit_index
       end
-      {%{data | state: :follower, log: log, commit_index: commit},
+      {%{data | state: :follower, leader: req.from, log: log, commit_index: commit},
         [reset_election_timer(),
          action_send([req.from],
            %RPC.AppendEntriesResp{from: data.me, term: req.term, success: true})
@@ -275,11 +294,11 @@ defmodule Raft.Consensus do
     end
   end
 
-  # received and AppendEntriesReq from (putative) new leader
+  # received an AppendEntriesReq from (putative) new leader
   def ev(%Data{state: :candidate} = data, {:recv, %RPC.AppendEntriesReq{term: term} = req} = event) do
     if term >= data.term do
       # step down to follower and process it as a follower
-      data = step_down_to_follower(data, term)
+      data = step_down_to_follower(data, term, req.from)
       ev(data, event)
     else
       {data, [action_send([req.from], %RPC.AppendEntriesResp{from: data.me, term: data.term, success: false})]}
@@ -294,17 +313,36 @@ defmodule Raft.Consensus do
   ## LEADER
 
   def ev(%Data{state: :leader} = data, {:recv, %RPC.WriteReq{} = req}) do
-    # put in log
-    # send aereqs to everyone
-    # "wait" for quorum of responses (functional API can't actually wait -- need to use callbacks)
-    #  does this mean we need a table of id's to pending responses?
-    # advance commit index
-    # when aeresps come back, send responses to client
+    # add to log
+    log = Log.append(data.log, data.term, :cmd, req.command)
+    # save sender in "replies" so you know who to send the write reply to when this entry is committed
+    lli = Log.last_index(log)
+    replies = put_in(data.replies[lli], {req.from, req.id})
+    # send aereqs to everyone? &&&
+    {%{data | log: log, replies: replies}, []}
   end
 
   # positive AppendEntriesResp processing
-  def ev(%Data{state: :leader} = data, {:recv, %RPC.AppendEntriesResp{success: true} = req}) do
-    raise "unimplemented"
+  def ev(%Data{state: :leader} = data, {:recv, %RPC.AppendEntriesResp{success: true} = resp}) do
+    index = data.next_index[resp.from]
+    match_index = Map.put(data.match_index, resp.from, index)
+    next_index = Map.put(data.next_index, resp.from, index + 1)
+    data = %{data | next_index: next_index, match_index: match_index}
+
+    new_commit_index = calc_commit_index(data.term, data.commit_index, match_index, data.log)
+    if new_commit_index > data.commit_index do
+      # commit logs, send write replies
+      # for now we don't actually have an external state machine to "apply" to so
+      # committing logs just means updating commit_index.
+      replies = (data.commit_index+1)..new_commit_index
+                |> Enum.map(fn ind ->
+                  {from, id} = data.replies[ind]
+                  {:send, [from], %RPC.WriteResp{from: data.me, id: id, result: :ok, leader: data.me}}
+                end)
+      {%{data | commit_index: new_commit_index}, [replies]}
+    else
+      {data, []}
+    end
   end
 
   # Negative AppendEntriesResp processing
@@ -318,5 +356,12 @@ defmodule Raft.Consensus do
         # step back and try again
         raise "unimplemented"
     end
+  end
+
+  # SPECIAL CASES
+  
+  # Deal with WriteReqs when you are not the leader
+  def ev(%Data{state: state} = data, {:recv, %RPC.WriteReq{} = req}) when state != :leader do
+    {data, [{:send, [req.from], %RPC.WriteResp{from: data.me, id: nil, result: :error, leader: data.leader}}]}
   end
 end

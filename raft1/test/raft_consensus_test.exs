@@ -287,4 +287,20 @@ defmodule Raft.ConsensusTest do
     |> event(:recv, %RPC.AppendEntriesResp{success: false, term: 0})
     |> expect(:leader, [ ])
   end
+
+  test "write req when you are not leader" do
+    data = base_consensus()
+    |> event(:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+      entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
+      |> expect(:follower, [
+        match({:set_timer, :election, _}),
+        match({:send, [:b], %RPC.AppendEntriesResp{success: true}}),
+      ])
+
+    data
+    |> event(:recv, %RPC.WriteReq{from: :z, id: 123, command: "foo"})
+    |> expect(:follower, [
+      match({:send, [:z], %RPC.WriteResp{from: :a, id: nil, result: :error, leader: :b}})
+        ])
+  end
 end

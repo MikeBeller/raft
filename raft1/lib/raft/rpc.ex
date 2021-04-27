@@ -44,19 +44,21 @@ defmodule Raft.RPC do
   end
 
   defmodule WriteReq do
-    defstruct [:from, :command]
+    defstruct [:from, :id, :command]
 
     @type t :: %__MODULE__ {
       from: Raft.addr(),
+      id: any(),
       command: any(),
     }
   end
 
   defmodule WriteResp do
-    defstruct [:from, :result, :leader]
+    defstruct [:from, :id, :result, :leader]
 
     @type t :: %__MODULE__ {
       from: Raft.addr(),
+      id: any(),
       result: :ok | :error,
       leader: nil | Raft.addr(),
     }
