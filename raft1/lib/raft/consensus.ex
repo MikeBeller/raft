@@ -93,7 +93,7 @@ defmodule Raft.Consensus do
 
   defp majority_greater_or_equal?(match_index, ind) do
     nn = map_size(match_index)
-    nc = for {_k,v} <- match_index, v >= ind, do: 1 |> Enum.sum
+    nc = (for {_k,v} <- match_index, v >= ind, do: 1) |> Enum.sum()
     nc > nn / 2
   end
 
@@ -103,9 +103,11 @@ defmodule Raft.Consensus do
     # will always be true for commit_index so defaults to commit_index
     commit_index..lli
     |> Enum.reverse()
-    |> Enum.find(fn ind ->
-      {:ok, entry} = Log.get_entry(log, ind) # must be there
-      entry.term == term and majority_greater_or_equal?(match_index, ind)
+    |> Enum.find(fn
+      0 -> true
+      ind ->
+        {:ok, entry} = Log.get_entry(log, ind) # must be there
+        entry.term == term and majority_greater_or_equal?(match_index, ind)
     end)
   end
 
@@ -171,16 +173,16 @@ defmodule Raft.Consensus do
     }
   end
 
-  defp previous(_data, 1), do: {0, 0}
-  defp previous(data, ind) do
+  defp previous(_log, 1), do: {0, 0}
+  defp previous(log, ind) do
     prev_index = ind - 1
-    {:ok, entry} = Log.get_entry(data, prev_index)
+    {:ok, entry} = Log.get_entry(log, prev_index)
     {prev_index, entry.term}
   end
 
   @spec send_entry(Data.t, Raft.addr(), non_neg_integer()) :: send_action()
   def send_entry(data, node, ind) do
-    {prev_index, prev_term} = previous(data, ind)
+    {prev_index, prev_term} = previous(data.log, ind)
     {:ok, entry} = Log.get_entry(data.log, ind)
 
     action_send([node],
@@ -194,6 +196,17 @@ defmodule Raft.Consensus do
       })
   end
 
+  @spec send_next_entries(Data.t) :: list(send_action())
+  # send next entry to each node per the next_index state variable, reset heartbeat
+  def send_next_entries(data) do
+    actions =
+      for node <- data.nodes do
+        ind = data.next_index[node]
+        send_entry(data, node, ind)
+      end
+    [action_cancel_timer(:election), action_set_timer(:heartbeat, @keep_alive_interval) | actions]
+  end
+
   @spec become_leader(Data.t) :: event_result()
   def become_leader(%Data{} = data) do
     lli = Log.last_index(data.log)
@@ -201,12 +214,7 @@ defmodule Raft.Consensus do
     match_index = for n <- data.nodes, into: %{}, do: {n, 0}
     log = Log.append(data.log, data.term, :noop, nil)  #force a commit_index
     data = %{data | voted_for: nil, responses: %{}, next_index: next_index, log: log, match_index: match_index, replies: %{}}
-    actions = 
-      for node <- data.nodes do
-        ind = next_index[node] # &&& ? thought it was different per node but it's lli+1 (see above)
-        send_entry(data, node, ind)
-      end
-    actions = [action_cancel_timer(:election), action_set_timer(:heartbeat, @keep_alive_interval) | actions]
+    actions = send_next_entries(data)
     {%{data | state: :leader}, actions}
   end
 
@@ -314,12 +322,12 @@ defmodule Raft.Consensus do
 
   def ev(%Data{state: :leader} = data, {:recv, %RPC.WriteReq{} = req}) do
     # add to log
-    log = Log.append(data.log, data.term, :cmd, req.command)
+    data = %{data | log: Log.append(data.log, data.term, :cmd, req.command)}
     # save sender in "replies" so you know who to send the write reply to when this entry is committed
-    lli = Log.last_index(log)
-    replies = put_in(data.replies[lli], {req.from, req.id})
-    # send aereqs to everyone? &&&
-    {%{data | log: log, replies: replies}, []}
+    lli = Log.last_index(data.log)
+    data = put_in(data.replies[lli], {req.from, req.id})
+    actions = send_next_entries(data)
+    {data, actions}
   end
 
   # positive AppendEntriesResp processing
@@ -335,11 +343,17 @@ defmodule Raft.Consensus do
       # for now we don't actually have an external state machine to "apply" to so
       # committing logs just means updating commit_index.
       replies = (data.commit_index+1)..new_commit_index
+                |> Enum.filter(fn ind ->
+                  case Log.get_entry(data.log, ind) do
+                    {:ok, e} -> e.type == :cmd
+                    {:error, _} -> false
+                  end
+                end)
                 |> Enum.map(fn ind ->
                   {from, id} = data.replies[ind]
                   {:send, [from], %RPC.WriteResp{from: data.me, id: id, result: :ok, leader: data.me}}
                 end)
-      {%{data | commit_index: new_commit_index}, [replies]}
+      {%{data | commit_index: new_commit_index}, replies}
     else
       {data, []}
     end

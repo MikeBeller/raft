@@ -39,26 +39,24 @@ defmodule Raft.ConsensusTest do
   end
 
   # get me a leader!
+  # Can get this from running taking the resulting data state from the test named:
+  # "Leader testing -- normal initial flow including responses from followers"
   defp leader() do
-    base_data = base_consensus()
-    me = base_data.me
-    nodes = base_data.nodes
-
-    base_data
-    |> event(:timeout, :election)
-    |> expect(:candidate, [
-      match({:set_timer, :election, _}),
-      match({:send, ^nodes, %RPC.RequestVoteReq{term: 1, from: ^me, last_log_index: 0, last_log_term: 0}
-      })
-    ])
-    |> event(:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true})
-    |> expect(:leader,
-      [
-        match({:cancel_timer, :election}),
-        match({:set_timer, :heartbeat, _}),
-        match({:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}}),
-        match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}}),
-      ])
+    %Raft.Consensus.Data{
+      commit_index: 1,
+      last_applied: 0,
+      leader: nil,
+      log: [%Raft.Log.Entry{data: nil, index: 1, term: 1, type: :noop}],
+      match_index: %{b: 1, c: 1},
+      me: :a,
+      next_index: %{b: 2, c: 2},
+      nodes: [:b, :c],
+      replies: %{},
+      responses: %{},
+      state: :leader,
+      term: 1,
+      voted_for: nil
+    }
   end
 
   test "random range" do
@@ -178,7 +176,7 @@ defmodule Raft.ConsensusTest do
     data
     |> event(:recv, %RPC.AppendEntriesReq{term: 0, from: :b, prev_log_index: 0, prev_log_term: 0,
       entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
-    |> expect(:candidate, [
+      |> expect(:candidate, [
         match({:send, [:b], %RPC.AppendEntriesResp{success: false}})
       ])
 
@@ -208,14 +206,14 @@ defmodule Raft.ConsensusTest do
 
     # Vanilla successful append entries
     new_data = data  # capture new_data for tests further down
-    |> event(:recv, req)
-    |> expect(:follower, [
-      match({:set_timer, :election, _}),
-      match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
-    |> event(:recv, %{req | prev_log_index: 1, prev_log_term: 1, entries: [entry2]})
-    |> expect(:follower, [
-      match({:set_timer, :election, _}),
-      match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
+               |> event(:recv, req)
+               |> expect(:follower, [
+                 match({:set_timer, :election, _}),
+                 match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
+                 |> event(:recv, %{req | prev_log_index: 1, prev_log_term: 1, entries: [entry2]})
+                 |> expect(:follower, [
+                   match({:set_timer, :election, _}),
+                   match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
     assert Log.last_index(new_data.log) == 2
 
     # Failure -- received term less than current term  (5.1)
@@ -250,11 +248,11 @@ defmodule Raft.ConsensusTest do
       prev_log_index: 1, prev_log_term: 1, entries: [entry2b, entry3b], leader_commit: 4}
 
     new_data = data
-    |> event(:recv, req)
-    |> expect(:follower, [
-      match({:set_timer, :election, _}),
-      match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: true}})
-    ])
+               |> event(:recv, req)
+               |> expect(:follower, [
+                 match({:set_timer, :election, _}),
+                 match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: true}})
+               ])
 
     assert new_data.log == [entry3b, entry2b, entry1]
     assert new_data.commit_index == 3
@@ -264,19 +262,47 @@ defmodule Raft.ConsensusTest do
       prev_log_index: 1, prev_log_term: 1, entries: [entry2b, entry3b], leader_commit: 1}
 
     new_data = data
-    |> event(:recv, req)
-    |> expect(:follower, [
-      match({:set_timer, :election, _}),
-      match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: true}})
-    ])
+               |> event(:recv, req)
+               |> expect(:follower, [
+                 match({:set_timer, :election, _}),
+                 match({:send, [:b], %RPC.AppendEntriesResp{term: 2, success: true}})
+               ])
 
     assert new_data.log == [entry3b, entry2b, entry1]
     assert new_data.commit_index == 1
   end
 
+  test "Leader testing -- normal initial flow including responses from followers" do
+    base_data = base_consensus()
+    me = base_data.me
+    nodes = base_data.nodes
+
+    base_data
+    |> event(:timeout, :election)
+    |> expect(:candidate, [
+      match({:set_timer, :election, _}),
+      match({:send, ^nodes, %RPC.RequestVoteReq{term: 1, from: ^me, last_log_index: 0, last_log_term: 0}
+      })
+    ])
+    |> event(:recv, %RPC.RequestVoteResp{term: 0, from: :b, granted: true})
+    |> expect(:leader,
+      [
+        match({:cancel_timer, :election}),
+        match({:set_timer, :heartbeat, _}),
+        match({:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}}),
+        match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 0, prev_log_term: 0, entries: _entries}}),
+      ])
+      |> event(:recv, %RPC.AppendEntriesResp{from: :b, success: true, term: 1})
+      |> expect(:leader, [])
+      |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: true, term: 1})
+      |> expect(:leader, [])
+    #|> IO.inspect  -- capture this for leader() function above
+
+  end
+
   test "Leader testing -- step down if unsuccessful AppendEntriesResp has higher term" do
     leader()
-    |> event(:recv, %RPC.AppendEntriesResp{success: false, term: 2})
+    |> event(:recv, %RPC.AppendEntriesResp{from: :b, success: false, term: 2})
     |> expect(:follower, [
       match({:set_timer, :election, _})
     ])
@@ -284,23 +310,46 @@ defmodule Raft.ConsensusTest do
 
   test "Leader testing -- ignore AppendEntriesResp with lower term" do
     leader()
-    |> event(:recv, %RPC.AppendEntriesResp{success: false, term: 0})
+    |> event(:recv, %RPC.AppendEntriesResp{from: :b, success: false, term: 0})
     |> expect(:leader, [ ])
   end
 
   test "write req when you are not leader" do
     data = base_consensus()
-    |> event(:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
-      entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
-      |> expect(:follower, [
-        match({:set_timer, :election, _}),
-        match({:send, [:b], %RPC.AppendEntriesResp{success: true}}),
-      ])
+           |> event(:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 0, prev_log_term: 0,
+             entries: [%Log.Entry{index: 1, term: 1, type: :nop, data: nil}]})
+             |> expect(:follower, [
+               match({:set_timer, :election, _}),
+               match({:send, [:b], %RPC.AppendEntriesResp{success: true}}),
+             ])
 
     data
     |> event(:recv, %RPC.WriteReq{from: :z, id: 123, command: "foo"})
     |> expect(:follower, [
       match({:send, [:z], %RPC.WriteResp{from: :a, id: nil, result: :error, leader: :b}})
-        ])
+    ])
+  end
+
+  test "successful commit processing with reply to client" do
+    entry = %Log.Entry{index: 2, term: 1, type: :cmd, data: "foo"}
+
+    result = leader()
+    |> event(:recv, %RPC.WriteReq{from: :z, id: 123, command: "foo"})
+    |> expect(:leader,
+      [
+        match({:cancel_timer, :election}),
+        match({:set_timer, :heartbeat, _}),
+        match({:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 1, prev_log_term: 1, entries: [^entry]}}),
+        match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 1, prev_log_term: 1, entries: [^entry]}}),
+      ])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :b, success: true, term: 1})
+    |> expect(:leader, [])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: true, term: 1})
+    |> expect(:leader, [
+      match({:send, [:z], %RPC.WriteResp{from: :a, id: 123, result: :ok, leader: :a}})
+    ])
+
+    assert %Data{commit_index: 2} = result
+
   end
 end
