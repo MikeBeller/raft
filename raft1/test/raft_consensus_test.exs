@@ -337,19 +337,73 @@ defmodule Raft.ConsensusTest do
     |> event(:recv, %RPC.WriteReq{from: :z, id: 123, command: "foo"})
     |> expect(:leader,
       [
-        match({:cancel_timer, :election}),
         match({:set_timer, :heartbeat, _}),
         match({:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 1, prev_log_term: 1, entries: [^entry]}}),
         match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 1, prev_log_term: 1, entries: [^entry]}}),
       ])
     |> event(:recv, %RPC.AppendEntriesResp{from: :b, success: true, term: 1})
-    |> expect(:leader, [])
-    |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: true, term: 1})
     |> expect(:leader, [
       match({:send, [:z], %RPC.WriteResp{from: :a, id: 123, result: :ok, leader: :a}})
     ])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: true, term: 1})
+    |> expect(:leader, [])
 
     assert %Data{commit_index: 2} = result
 
+  end
+
+  test "inconsistent follower -- decrement next_index" do
+    # leader with some log entries
+    # assume :b is up to date but :c is lagging / lost some entries
+    leader = %Raft.Consensus.Data{
+      commit_index: 4,
+      last_applied: 0,
+      leader: nil,
+      log: [
+        %Raft.Log.Entry{data: "r4", index: 4, term: 1, type: :cmd},
+        %Raft.Log.Entry{data: "r3", index: 3, term: 1, type: :cmd},
+        %Raft.Log.Entry{data: "r2", index: 2, term: 1, type: :cmd},
+        %Raft.Log.Entry{data: nil, index: 1, term: 1, type: :noop},
+      ],
+      match_index: %{b: 4, c: 1},
+      me: :a,
+      next_index: %{b: 5, c: 5},
+      nodes: [:b, :c],
+      replies: %{
+        2 => {:z, "foo"},
+        3 => {:z, "bar"},
+        4 => {:z, "baz"},
+      },
+      responses: %{},
+      state: :leader,
+      term: 1,
+      voted_for: nil
+    }
+    entry5 = %Raft.Log.Entry{data: "r5", index: 5, term: 1, type: :cmd}
+    entry4 = %Raft.Log.Entry{data: "r4", index: 4, term: 1, type: :cmd}
+    entry3 = %Raft.Log.Entry{data: "r3", index: 3, term: 1, type: :cmd}
+
+    leader
+    |> event(:recv, %RPC.WriteReq{from: :z, id: 123, command: "r5"})
+    |> expect(:leader,
+      [
+        match({:set_timer, :heartbeat, _}),
+        match({:send, [:b], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 4, prev_log_term: 1, entries: [^entry5]}}),
+        match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 4, prev_log_term: 1, entries: [^entry5]}}),
+      ])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :b, success: true, term: 1})
+    |> expect(:leader, [
+      match({:send, [:z], %RPC.WriteResp{from: :a, id: 123, result: :ok, leader: :a}})
+    ])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: false, term: 1})
+    |> expect(:leader, [
+      match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 3, prev_log_term: 1, entries: [^entry4]}}),
+    ])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: false, term: 1})
+    |> expect(:leader, [
+      match({:send, [:c], %RPC.AppendEntriesReq{term: 1, from: :a, prev_log_index: 2, prev_log_term: 1, entries: [^entry3]}}),
+    ])
+    |> event(:recv, %RPC.AppendEntriesResp{from: :c, success: true, term: 1})
+    |> expect(:leader, [])
   end
 end

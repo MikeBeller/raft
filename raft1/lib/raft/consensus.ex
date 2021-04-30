@@ -51,6 +51,13 @@ defmodule Raft.Consensus do
     end
   end
 
+  # Timers work as follows:
+  #  * Each timer has a name
+  #  * Only one timer with that name can be running
+  #  * Setting a timer name also cancels any previous timer associated with that name
+  #  * Cancelation is "perfect" (if you cancel, you will not receive a late message)
+  #    (This is easily achievable if the timer system keeps the Erlang timer ref of the
+  #    currently operating timer and filters out the old messages.)
   @type set_timer_action() :: {:set_timer, atom(), non_neg_integer()}
   @type cancel_timer_action() :: {:cancel_timer, atom()}
   @type send_action() :: {:send, list(addr()), RPC.t}
@@ -92,9 +99,9 @@ defmodule Raft.Consensus do
   end
 
   defp majority_greater_or_equal?(match_index, ind) do
-    nn = map_size(match_index)
-    nc = (for {_k,v} <- match_index, v >= ind, do: 1) |> Enum.sum()
-    nc > nn / 2
+    nn = map_size(match_index) + 1
+    nc = ((for {_k,v} <- match_index, v >= ind, do: 1) |> Enum.sum()) + 1
+    nc > (nn / 2)
   end
 
   defp calc_commit_index(term, commit_index, match_index, log) do
@@ -199,12 +206,10 @@ defmodule Raft.Consensus do
   @spec send_next_entries(Data.t) :: list(send_action())
   # send next entry to each node per the next_index state variable, reset heartbeat
   def send_next_entries(data) do
-    actions =
-      for node <- data.nodes do
-        ind = data.next_index[node]
-        send_entry(data, node, ind)
-      end
-    [action_cancel_timer(:election), action_set_timer(:heartbeat, @keep_alive_interval) | actions]
+    for node <- data.nodes do
+      ind = data.next_index[node]
+      send_entry(data, node, ind)
+    end
   end
 
   @spec become_leader(Data.t) :: event_result()
@@ -215,6 +220,7 @@ defmodule Raft.Consensus do
     log = Log.append(data.log, data.term, :noop, nil)  #force a commit_index
     data = %{data | voted_for: nil, responses: %{}, next_index: next_index, log: log, match_index: match_index, replies: %{}}
     actions = send_next_entries(data)
+    actions = [action_cancel_timer(:election), action_set_timer(:heartbeat, @keep_alive_interval) | actions]
     {%{data | state: :leader}, actions}
   end
 
@@ -327,6 +333,7 @@ defmodule Raft.Consensus do
     lli = Log.last_index(data.log)
     data = put_in(data.replies[lli], {req.from, req.id})
     actions = send_next_entries(data)
+    actions = [action_set_timer(:heartbeat, @keep_alive_interval) | actions]
     {data, actions}
   end
 
@@ -368,7 +375,15 @@ defmodule Raft.Consensus do
         {data, []}  # delayed message, ignore
       true ->
         # step back and try again
-        raise "unimplemented"
+        case data.next_index[req.from] do
+          0 ->
+            # &&& really should log this!
+            {data, []}
+          ind ->
+            data = put_in(data.next_index[req.from], ind-1)
+            actions = [send_entry(data, req.from, ind-1)]
+            {data, actions}
+        end
     end
   end
 
