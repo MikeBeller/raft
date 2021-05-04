@@ -2,12 +2,13 @@ defmodule Raft.ServerTest do
   use ExUnit.Case, async: false
   alias Raft.Consensus
   alias Raft.Server
-  alias Raft.RPC
-  alias Raft.Log
-  alias Consensus.Data
 
   test "init" do
-    cons = Raft.Consensus.new()
-    IO.inspect Raft.Server.start_link(cons)
+    nodes = [:a, :b, :c]
+    _a = Consensus.new(:a)
+    _b = Consensus.new(:b)
+    _c = Consensus.new(:c)
+    nodes |> Enum.each(&Server.start_link/1)
+    nodes |> Enum.each(&Server.ev(&1, {:config, nodes}))
   end
 end

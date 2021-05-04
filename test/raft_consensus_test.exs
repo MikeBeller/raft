@@ -28,8 +28,7 @@ defmodule Raft.ConsensusTest do
 
   @spec base_consensus() :: Data.t
   def base_consensus() do
-    Consensus.init(:a)
-    |> expect(:init, [])
+    Consensus.new(:a)
     |> event(:config, [:a, :b, :c])
     |> expect(:follower, [match {:set_timer, :election, _}])
   end
@@ -80,12 +79,11 @@ defmodule Raft.ConsensusTest do
   end
 
   test "init waits for nodes" do
-    assert {%Data{state: :init, me: :a, term: 0}, []} = Consensus.init(:a)
+    assert %Data{state: :init, me: :a, term: 0} = Consensus.new(:a)
   end
 
   test "config leads to follower" do
-    Consensus.init(:a)
-    |> expect(:init, [])
+    Consensus.new(:a)
     |> event(:config, [:a, :b, :c])
     |> expect(:follower, [match {:set_timer, :election, _}])
   end

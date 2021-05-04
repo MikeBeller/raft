@@ -123,10 +123,9 @@ defmodule Raft.Consensus do
 
   defp reset_election_timer(), do: action_set_timer(:election, election_timeout())
 
-  @spec init(addr()) :: event_result()
-  def init(me) do
-    data = %{Data.new() | me: me}
-    {data, []}
+  @spec new(addr()) :: event_result()
+  def new(me) do
+    %{Data.new() | me: me}
   end
 
   @type config_event() :: {:config, list(addr())}
