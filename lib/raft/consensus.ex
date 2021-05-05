@@ -182,7 +182,6 @@ defmodule Raft.Consensus do
   defp previous(_log, 1), do: {0, 0}
   defp previous(log, ind) do
     prev_index = ind - 1
-    IO.puts "IN PREVIOUS LOOKING FOR: #{prev_index}"
     {:ok, entry} = Log.get_entry(log, prev_index)
     {prev_index, entry.term}
   end
@@ -343,7 +342,8 @@ defmodule Raft.Consensus do
   def ev(%Data{state: :leader} = data, {:recv, %RPC.AppendEntriesResp{success: true} = resp}) do
     index = data.next_index[resp.from]
     match_index = Map.put(data.match_index, resp.from, index)
-    next_index = Map.put(data.next_index, resp.from, index + 1)
+    lli = Log.last_index(data.log)
+    next_index = Map.put(data.next_index, resp.from, min(index + 1, lli))
     data = %{data | next_index: next_index, match_index: match_index}
 
     new_commit_index = calc_commit_index(data.term, data.commit_index, match_index, data.log)
