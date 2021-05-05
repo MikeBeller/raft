@@ -5,10 +5,15 @@ defmodule Raft.ServerTest do
 
   test "init" do
     nodes = [:a, :b, :c]
-    _a = Consensus.new(:a)
-    _b = Consensus.new(:b)
-    _c = Consensus.new(:c)
-    nodes |> Enum.each(&Server.start_link/1)
-    nodes |> Enum.each(&Server.ev(&1, {:config, nodes}))
+    conses = for n <- nodes, do: Consensus.new(n)
+    servers = for c <- conses do
+      {:ok, srv} = Server.start_link(cons: c, name: c.me, log: [:send, :recv, :timeout])
+      srv
+    end
+
+    servers
+    |> Enum.each(fn srv -> Server.ev(srv, {:config, nodes}) end)
+
+    Process.sleep(3000)
   end
 end
