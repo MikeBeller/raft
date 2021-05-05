@@ -182,6 +182,7 @@ defmodule Raft.Consensus do
   defp previous(_log, 1), do: {0, 0}
   defp previous(log, ind) do
     prev_index = ind - 1
+    IO.puts "IN PREVIOUS LOOKING FOR: #{prev_index}"
     {:ok, entry} = Log.get_entry(log, prev_index)
     {prev_index, entry.term}
   end
@@ -189,8 +190,10 @@ defmodule Raft.Consensus do
   @spec send_entry(Data.t, Raft.addr(), non_neg_integer()) :: send_action()
   def send_entry(data, node, ind) do
     {prev_index, prev_term} = previous(data.log, ind)
-    {:ok, entry} = Log.get_entry(data.log, ind)
-
+    entries = case Log.get_entry(data.log, ind) do
+      {:ok, entry} -> [entry]
+      {:error, :not_found} -> []  # heartbeat
+    end
     action_send([node],
       %RPC.AppendEntriesReq{
         from: data.me,
@@ -198,12 +201,12 @@ defmodule Raft.Consensus do
         prev_log_index: prev_index,
         prev_log_term: prev_term,
         leader_commit: data.commit_index,
-        entries: [entry],
+        entries: entries,
       })
   end
 
   @spec send_next_entries(Data.t) :: list(send_action())
-  # send next entry to each node per the next_index state variable, reset heartbeat
+  # send next entry to each node per the next_index state variable
   def send_next_entries(data) do
     for node <- data.nodes do
       ind = data.next_index[node]
@@ -255,7 +258,7 @@ defmodule Raft.Consensus do
       else
         data.commit_index
       end
-      {%{data | state: :follower, leader: req.from, log: log, commit_index: commit},
+      {%{data | term: req.term, state: :follower, leader: req.from, log: log, commit_index: commit},
         [reset_election_timer(),
          action_send([req.from],
            %RPC.AppendEntriesResp{from: data.me, term: req.term, success: true})
@@ -384,6 +387,17 @@ defmodule Raft.Consensus do
             {data, actions}
         end
     end
+  end
+
+  # Deal with heartbeats
+  def ev(%Data{state: :leader} = data, {:timeout, :heartbeat}) do
+    actions = send_next_entries(data)
+    {data, [action_set_timer(:heartbeat, @keep_alive_interval) | actions]}
+  end
+
+  # Ignore vote responses after you already became leader:
+  def ev(%Data{state: :leader} = data, {:recv, %RPC.RequestVoteResp{} = resp}) do
+    {data, []}
   end
 
   # SPECIAL CASES

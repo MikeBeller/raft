@@ -74,7 +74,14 @@ defmodule Raft.Server do
     if :recv in state.log do
       Logger.info "#{inspect state.name} RECV: #{inspect msg}"
     end
-    {cons, actions} = Consensus.ev(state.cons, msg)
+    # hack to deal with special case of :config message
+    {cons, actions} =
+      case msg do
+        {:config, cv} ->
+          Consensus.ev(state.cons, msg)
+        _ ->
+        Consensus.ev(state.cons, {:recv, msg})
+      end
     state = do_actions(actions, %{state | cons: cons})
     {:noreply, state}
   end

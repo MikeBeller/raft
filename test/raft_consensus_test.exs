@@ -190,7 +190,6 @@ defmodule Raft.ConsensusTest do
 
   end
 
-
   test "AppendEntries processing as follower" do
     data = base_consensus()
     # document some expected initial fields
@@ -213,6 +212,13 @@ defmodule Raft.ConsensusTest do
                    match({:set_timer, :election, _}),
                    match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
     assert Log.last_index(new_data.log) == 2
+
+    # Handle a empty AppendEntries (used for heartbeat)
+    new_data
+    |> event(:recv, %RPC.AppendEntriesReq{term: 1, from: :b, prev_log_index: 2, prev_log_term: 1, entries: []})
+    |> expect(:follower, [
+       match({:set_timer, :election, _}),
+       match({:send, [:b], %RPC.AppendEntriesResp{term: 1, success: true}})])
 
     # Failure -- received term less than current term  (5.1)
     %{data | term: 2}
