@@ -9,9 +9,9 @@ of RAFT and Elixir.  Not intended for production use!
 
 In working on this project I made use of / reference to the following:
 
-[Raft site and paper](https://raft.github.io/)
-[Erlang implementation of Raft](https://github.com/rabbitmq/ra)
-[Elixir implementation of Raft](https://github.com/toniqsystems/raft)
+* [Raft site and paper](https://raft.github.io/)
+* [Erlang implementation of Raft](https://github.com/rabbitmq/ra)
+* [Elixir implementation of Raft](https://github.com/toniqsystems/raft)
 
 ## Architecture
 
