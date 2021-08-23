@@ -23,7 +23,6 @@ defmodule Raft.MixProject do
   defp deps do
     [
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
-      {:gen_state_machine, "~> 3.0"},
     ]
   end
 end
